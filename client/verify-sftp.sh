@@ -65,13 +65,15 @@ $RUN "$BIN" dropbearkey -y -f "$WORK/id_new" 2>/dev/null | grep '^ssh-ed25519' >
 "$DIR/patch-cred" "$BIN" ak "$WORK/ak.txt"
 
 wait_for_port() {
+	# fd 3 lives only inside the subshell below; the parent never has it open,
+	# so there is nothing to close out here (see verify.sh for why a bare
+	# `exec 3>&-` in the parent silently killed the whole script).
 	i=0
 	while ! (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; do
 		i=$((i + 1))
 		[ "$i" -lt 50 ] || die "server never opened port $PORT"
 		sleep 0.2
 	done
-	exec 3>&- 3<&- 2>/dev/null || true
 }
 
 $RUN "$BIN" dropbear -F -E -p "127.0.0.1:$PORT" >"$WORK/server.log" 2>&1 &
