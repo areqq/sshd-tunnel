@@ -31,7 +31,7 @@ jobs:
       - name: Install host build tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential bzip2 xz-utils >/dev/null
+          sudo apt-get install -y -qq build-essential bzip2 xz-utils qemu-user-static >/dev/null
 
       # Toolchains are large; cache them per arch so only the first run downloads.
       - name: Cache the Bootlin toolchain
@@ -54,6 +54,12 @@ jobs:
           ls -l client/out/
           file client/out/dropbear-tunnel-${{ matrix.arch }}.tgz
 
+      # Proves the credential-slot mechanism itself, not just that it links:
+      # patches id/hk/ak both via patch-cred and via raw sed, under
+      # qemu-<arch>-static, and checks a live dbclient login succeeds both times.
+      - name: Verify credential slots (patch-cred + raw sed, live login)
+        run: client/verify.sh ${{ matrix.arch }} client/out/dropbear-tunnel-${{ matrix.arch }}.tgz
+
       - uses: actions/upload-artifact@v4
         with:
           name: dropbear-tunnel-${{ matrix.arch }}
@@ -63,9 +69,71 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  build-sftp:
+    name: build ${{ matrix.arch }} (SFTP)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, i686, armv7, armv5, aarch64, mips, mipsel]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential bzip2 xz-utils qemu-user-static >/dev/null
+
+      - name: Cache the Bootlin toolchain
+        uses: actions/cache@v4
+        with:
+          path: client/toolchain
+          key: bootlin-${{ matrix.arch }}-2025.08-1
+
+      # Both Dropbear and OpenSSH tarballs live under client/src-cache; one key
+      # for the pair keeps this a single cache entry instead of two competing
+      # writers to the same directory.
+      - name: Cache the Dropbear + OpenSSH sources
+        uses: actions/cache@v4
+        with:
+          path: client/src-cache
+          key: client-src-cache-dropbear-2026.94-openssh-9.9p2
+
+      - name: Build (WITH_SFTP=1)
+        run: WITH_SFTP=1 client/build.sh ${{ matrix.arch }}
+
+      - name: Show the result
+        run: |
+          ls -l client/out/
+          file client/out/dropbear-tunnel-${{ matrix.arch }}.tgz
+
+      # Proves a real file transfer round-trip under qemu-<arch>-static: the
+      # embedded server execs the staged sftp-server for the subsystem, and
+      # the bundled sftp client routes its session through the packaged
+      # dbclient symlink (self-exec, so this also exercises binfmt_misc).
+      - name: Verify SFTP round-trip
+        run: client/verify-sftp.sh ${{ matrix.arch }} client/out/dropbear-tunnel-${{ matrix.arch }}.tgz
+
+      - name: Rename artifact so it can't collide with the core build's
+        run: |
+          mkdir -p client/out-sftp
+          cp client/out/dropbear-tunnel-${{ matrix.arch }}.tgz \
+            client/out-sftp/dropbear-tunnel-${{ matrix.arch }}-sftp.tgz
+          ( cd client/out-sftp && sha256sum "dropbear-tunnel-${{ matrix.arch }}-sftp.tgz" \
+            > "dropbear-tunnel-${{ matrix.arch }}-sftp.tgz.sha256" )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dropbear-tunnel-${{ matrix.arch }}-sftp
+          path: |
+            client/out-sftp/dropbear-tunnel-${{ matrix.arch }}-sftp.tgz
+            client/out-sftp/dropbear-tunnel-${{ matrix.arch }}-sftp.tgz.sha256
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: publish client release
-    needs: build
+    needs: [build, build-sftp]
     if: startsWith(github.ref, 'refs/tags/client-v')
     runs-on: ubuntu-latest
     permissions:

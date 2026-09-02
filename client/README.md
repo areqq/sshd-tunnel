@@ -126,10 +126,17 @@ WITH_SFTP=1 client/build.sh x86_64
 ```
 
 That flips on `DROPBEAR_SFTPSERVER` (with `SFTPSERVER_PATH=/tmp/sftp-server`),
-builds the two OpenSSH binaries, and adds them to the `.tgz`. On the device,
-`bootstrap.sh --serve` stages `sftp-server` to `/tmp/sftp-server`, so an
-incoming SFTP session to the embedded server works; `sftp -S ./dropbearmulti
-user@host` routes an outgoing SFTP client session over `dbclient`.
+builds the two OpenSSH binaries, and adds them to the `.tgz`, alongside a
+`dbclient` symlink to `dropbearmulti`. On the device, `bootstrap.sh --serve`
+stages `sftp-server` to `/tmp/sftp-server`, so an incoming SFTP session to the
+embedded server works; `sftp -S ./dbclient user@host` routes an outgoing SFTP
+client session over dbclient.
+
+> `sftp -S` execs its argument directly with ssh-style arguments, without
+> inserting a subcommand name — so the target must be a binary or symlink
+> literally named `dbclient` (or `ssh`) for dropbearmulti's multi-call
+> dispatch to recognize it. `./dropbearmulti` itself won't work here (it just
+> prints usage); the packaged `dbclient` symlink is what makes this work.
 
 `WITH_SFTP` is **off by default and not in the CI matrix**, so it can never
 break the core `dropbearmulti` build.
@@ -139,7 +146,14 @@ break the core `dropbearmulti` build.
 - **Proven:** the slot mechanism end-to-end on x86_64 — a key patched in with
   both `patch-cred` (dd) and raw `sed` is loaded by `dbclient` and authenticates
   to OpenSSH; a wrong or empty slot is correctly inactive.
-- **Authored, awaiting a CI build:** the 7-arch matrix and the release workflow.
-- **Unverified:** the optional static SFTP cross-build (`build-sftp.sh`). The
-  configure/flags are a best-effort attempt that has not yet been run green on
-  any arch; treat it as a starting point, not a guarantee, until CI confirms it.
+- **Proven:** the 7-arch matrix and the release workflow (client-v0.1.0).
+- **Proven, all 7 arches, under `qemu-<arch>-static`:** the credential-slot
+  mechanism end-to-end — both `patch-cred` and raw `sed` patch a live
+  identity/hostkey/authorized_key, and `dbclient` authenticates against the
+  embedded server both times (`client/verify.sh`, wired into CI).
+- **Proven, all 7 arches, under `qemu-<arch>-static`:** the optional static
+  SFTP cross-build. `build-sftp.sh` produces a static, stripped `sftp` +
+  `sftp-server`; with `WITH_SFTP=1` the embedded server accepts an incoming
+  SFTP session via the staged `sftp-server`, and the bundled `sftp -S
+  ./dbclient` uploads a file outbound whose content round-trips correctly
+  (`client/verify-sftp.sh`, wired into CI as the `build-sftp` matrix job).

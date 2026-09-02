@@ -150,6 +150,10 @@ if [ "${WITH_SFTP:-0}" = '1' ]; then
 	cp "$HERE/out/sftp-$ARCH/sftp-server" "$STAGE/sftp-server"
 	cp "$HERE/out/sftp-$ARCH/sftp" "$STAGE/sftp"
 	chmod 755 "$STAGE/sftp-server" "$STAGE/sftp"
+	# dropbearmulti dispatches on argv[0] or (run bare) on argv[1]; `sftp -S`
+	# execs the transport directly with ssh-style args in argv[1..], so it
+	# needs a binary/symlink literally named 'dbclient' to dispatch correctly.
+	ln -sf dropbearmulti "$STAGE/dbclient"
 fi
 
 TARBALL="$OUT_DIR/dropbear-tunnel-$ARCH.tgz"
