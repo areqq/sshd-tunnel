@@ -12,7 +12,7 @@
 # Client side: the bundled OpenSSH `sftp` routes its session through the
 # packaged `dbclient` symlink (`sftp -S ./dbclient`, per the README) — the
 # multi-call binary only dispatches correctly when invoked under that name.
-set -eu
+set -Eeu # -E: an ERR trap without it is NOT inherited into functions/subshells
 
 ARCH="${1:?usage: verify-sftp.sh <arch> <tarball.tgz>}"
 TARBALL="${2:?usage: verify-sftp.sh <arch> <tarball.tgz>}"
