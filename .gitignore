@@ -1,2 +1,9 @@
 dist/
 codedb.snapshot
+
+# client/ build artifacts — fetched or produced, never committed
+client/out/
+client/toolchain/
+client/src-cache/
+client/.build/
+client/*.tar.bz2
