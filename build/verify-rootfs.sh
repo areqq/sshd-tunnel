@@ -72,8 +72,25 @@ fi
 
 head_ 'device placeholders'
 for dev in null zero full random urandom tty; do
-	[ -e "$ROOTFS/dev/$dev" ] && ok "dev/$dev placeholder" || bad "dev/$dev placeholder missing"
+	if [ -f "$ROOTFS/dev/$dev" ]; then
+		ok "dev/$dev is a placeholder file"
+	elif [ -e "$ROOTFS/dev/$dev" ]; then
+		bad "dev/$dev exists but is not a regular file"
+	else
+		bad "dev/$dev placeholder missing"
+	fi
 done
+
+# A device node anywhere in the rootfs makes the tarball impossible to unpack
+# without mknod privileges, which breaks `curl | sh` for a normal user. apk
+# creates such nodes for busybox, so this is checked rather than assumed.
+NODES="$(find "$ROOTFS" \( -type c -o -type b \) 2>/dev/null)"
+if [ -z "$NODES" ]; then
+	ok 'the rootfs contains no device nodes'
+else
+	bad 'the rootfs contains device nodes'
+	printf '%s\n' "$NODES" | sed 's/^/        /'
+fi
 
 head_ 'legacy algorithms named in the config template'
 for algo in $REQUIRED_ALGOS; do

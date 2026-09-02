@@ -103,9 +103,19 @@ chown root:root "$ROOTFS/var/empty"
 chmod 755 "$ROOTFS/var/empty"
 chmod 1777 "$ROOTFS/tmp"
 
-# Placeholder regular files: the host wrapper bind-mounts the real devices onto
-# them. Real device nodes are avoided so the tarball can be unpacked as a
-# normal user without mknod privileges.
+# /dev is emptied and refilled with placeholder regular files; the host wrapper
+# bind-mounts the real devices onto them at startup. Device nodes must not
+# survive into the tarball, because unpacking one needs mknod privileges and
+# the whole point is that `curl | sh` works as a normal user.
+#
+# The directory is deleted rather than overwritten in place: apk creates
+# initial device nodes for busybox, and redirecting into an existing character
+# device writes *through* it instead of replacing the file. That is what
+# shipped a broken v0.1.0 — locally mknod was denied so the bug stayed hidden,
+# while the CI builder had CAP_MKNOD and produced real nodes.
+rm -rf "$ROOTFS/dev"
+mkdir -p "$ROOTFS/dev"
+chmod 755 "$ROOTFS/dev"
 for dev in null zero full random urandom tty; do
 	: > "$ROOTFS/dev/$dev"
 done
