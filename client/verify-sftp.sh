@@ -52,6 +52,7 @@ cp "$DIR/sftp-server" "$SFTPSERVER_STAGE"
 chmod 755 "$SFTPSERVER_STAGE"
 [ "$SFTPSERVER_STAGE" = "/tmp/sftp-server" ] || ln -sf "$SFTPSERVER_STAGE" /tmp/sftp-server
 
+LOGIN_USER="$(id -un)" # the embedded server needs a real local account to log into
 HOME="$WORK"
 export HOME
 mkdir -p "$HOME/.ssh"
@@ -84,7 +85,7 @@ echo "sftp-e2e-payload-$$" >"$WORK/upload.txt"
 
 log 'uploading a file over sftp (client transport: dbclient, server subsystem: sftp-server)'
 out="$($RUN "$DIR/sftp" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-	-S "$DIR/dbclient" -P "$PORT" q@127.0.0.1 <<EOF
+	-S "$DIR/dbclient" -P "$PORT" "$LOGIN_USER@127.0.0.1" <<EOF
 put $WORK/upload.txt $WORK/downloaded.txt
 EOF
 )" || { printf '%s\n' "$out" >&2; printf -- '--- server.log ---\n' >&2; cat "$WORK/server.log" >&2; die 'sftp put failed'; }

@@ -56,6 +56,7 @@ for m in id hk ak; do
 done
 
 PORT=2299
+LOGIN_USER="$(id -un)" # the embedded server needs a real local account to log into
 HOME="$WORK" # dropbearkey/dbclient write under $HOME/.ssh; keep it scoped to this run
 export HOME
 mkdir -p "$HOME/.ssh"
@@ -89,7 +90,7 @@ stop_server() {
 
 login_and_check() {
 	label="$1"
-	out="$($RUN "$BIN" dbclient -y -p "$PORT" q@127.0.0.1 "echo VERIFY_${label}_OK" 2>&1)" \
+	out="$($RUN "$BIN" dbclient -y -p "$PORT" "$LOGIN_USER@127.0.0.1" "echo VERIFY_${label}_OK" 2>&1)" \
 		|| { printf '%s\n' "$out" >&2; printf -- '--- server.log ---\n' >&2; cat "$WORK/server.log" >&2; die "$label: dbclient login failed"; }
 	printf '%s\n' "$out" | grep -q "VERIFY_${label}_OK" || { printf '%s\n' "$out" >&2; die "$label: expected marker not in dbclient output"; }
 	grep -q 'Using embedded ed25519 hostkey' "$WORK/server.log" || die "$label: server did not report using the embedded hostkey"
