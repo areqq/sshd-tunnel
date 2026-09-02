@@ -1,0 +1,56 @@
+#!/bin/sh
+# Swap a credential in a finished dropbear binary, in place, without recompiling.
+#
+#   patch-cred <binary> <id|hk|ak> <payload-file>
+#
+#   id  client identity private key (Dropbear format) — box authenticates with it
+#   hk  server host key (Dropbear format)             — box-as-server presents it
+#   ak  authorized_keys line (text)                   — box-as-server accepts it
+#
+# The payload is base64-encoded, right-padded with '.' to the slot's fixed
+# width, and written over the slot with dd (conv=notrunc), so the file size
+# never changes and the ELF stays valid. The slot width is read from the binary
+# itself, so this needs no knowledge of how it was built.
+set -eu
+
+BIN="${1:?usage: patch-cred <binary> <id|hk|ak> <payload-file>}"
+ID="${2:?slot id: id, hk or ak}"
+PAYLOAD="${3:?payload file}"
+
+case "$ID" in id|hk|ak) ;; *) echo "patch-cred: slot must be id, hk or ak" >&2; exit 2 ;; esac
+[ -f "$BIN" ]     || { echo "patch-cred: no such binary: $BIN" >&2; exit 1; }
+[ -f "$PAYLOAD" ] || { echo "patch-cred: no such payload: $PAYLOAD" >&2; exit 1; }
+
+BEGIN="@@DBCRED:$ID:B@@"
+END="@@DBCRED:$ID:E@@"
+MARKER_LEN=15
+
+# Byte offset of each marker (grep -b reports the match's start offset).
+boff="$(grep -abo -- "$BEGIN" "$BIN" | head -1 | cut -d: -f1)"
+eoff="$(grep -abo -- "$END"   "$BIN" | head -1 | cut -d: -f1)"
+[ -n "$boff" ] || { echo "patch-cred: begin marker for '$ID' not found" >&2; exit 1; }
+[ -n "$eoff" ] || { echo "patch-cred: end marker for '$ID' not found" >&2; exit 1; }
+
+payload_off=$((boff + MARKER_LEN))
+width=$((eoff - payload_off))
+[ "$width" -gt 0 ] || { echo "patch-cred: slot width computed as $width" >&2; exit 1; }
+
+b64="$(base64 -w0 < "$PAYLOAD" 2>/dev/null || base64 < "$PAYLOAD" | tr -d '\n')"
+blen="${#b64}"
+if [ "$blen" -gt "$width" ]; then
+	echo "patch-cred: payload too big: base64 is $blen bytes, slot holds $width" >&2
+	exit 1
+fi
+
+# base64 (blen bytes) then '.' padding to exactly width bytes.
+pad_count=$((width - blen))
+padding="$(awk -v n="$pad_count" 'BEGIN{s="";for(i=0;i<n;i++)s=s".";printf "%s",s}')"
+printf '%s%s' "$b64" "$padding" > "$BIN.slotdata.$$"
+
+before="$(wc -c < "$BIN")"
+dd if="$BIN.slotdata.$$" of="$BIN" bs=1 seek="$payload_off" conv=notrunc status=none
+rm -f "$BIN.slotdata.$$"
+after="$(wc -c < "$BIN")"
+
+[ "$before" = "$after" ] || { echo "patch-cred: size changed $before -> $after (bug)" >&2; exit 1; }
+echo "patch-cred: $ID slot set ($blen/$width base64 bytes), file size $after unchanged"
