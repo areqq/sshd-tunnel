@@ -13,13 +13,13 @@
 # bind-mounted onto placeholder files here, and unmounted on exit.
 #
 # Environment:
-#   SSHD_TUNEL_PASSWORD     password, keeping it out of the process list
-#   SSHD_TUNEL_SKIP_MOUNTS  set to 1 when /proc and /dev are already prepared
-#   SSHD_TUNEL_IP           override the advertised server addresses
+#   SSHD_TUNNEL_PASSWORD     password, keeping it out of the process list
+#   SSHD_TUNNEL_SKIP_MOUNTS  set to 1 when /proc and /dev are already prepared
+#   SSHD_TUNNEL_IP           override the advertised server addresses
 
 set -eu
 
-PROG='sshd-tunel'
+PROG='sshd-tunnel'
 DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 ROOTFS="$DIR/rootfs"
 DEVICES='null zero full random urandom tty'
@@ -115,17 +115,17 @@ prepare_mounts() {
 	done
 }
 
-if [ "${SSHD_TUNEL_SKIP_MOUNTS:-0}" = '1' ]; then
-	log 'skipping mount setup (SSHD_TUNEL_SKIP_MOUNTS=1)'
+if [ "${SSHD_TUNNEL_SKIP_MOUNTS:-0}" = '1' ]; then
+	log 'skipping mount setup (SSHD_TUNNEL_SKIP_MOUNTS=1)'
 else
 	prepare_mounts
 fi
 
 # ------------------------------------------------------------ server addresses
-if [ -z "${SSHD_TUNEL_IP:-}" ]; then
-	SSHD_TUNEL_IP="$(ip -4 -o addr show scope global 2>/dev/null |
+if [ -z "${SSHD_TUNNEL_IP:-}" ]; then
+	SSHD_TUNNEL_IP="$(ip -4 -o addr show scope global 2>/dev/null |
 		awk '{ split($4, a, "/"); printf "%s ", a[1] }')"
-	[ -n "$SSHD_TUNEL_IP" ] || SSHD_TUNEL_IP="$(hostname -I 2>/dev/null || true)"
+	[ -n "$SSHD_TUNNEL_IP" ] || SSHD_TUNNEL_IP="$(hostname -I 2>/dev/null || true)"
 fi
 
 # ------------------------------------------------------------------- handover
@@ -135,8 +135,8 @@ env -i \
 	PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
 	HOME='/root' \
 	TERM="${TERM:-dumb}" \
-	SSHD_TUNEL_IP="$SSHD_TUNEL_IP" \
-	SSHD_TUNEL_PASSWORD="${SSHD_TUNEL_PASSWORD:-}" \
+	SSHD_TUNNEL_IP="$SSHD_TUNNEL_IP" \
+	SSHD_TUNNEL_PASSWORD="${SSHD_TUNNEL_PASSWORD:-}" \
 	chroot "$ROOTFS" /run.sh "$@" &
 
 CHILD=$!

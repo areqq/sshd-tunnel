@@ -1,27 +1,27 @@
 #!/bin/sh
-# Download a released sshd-tunel chroot and start it.
+# Download a released sshd-tunnel chroot and start it.
 #
-#   curl -fsSL https://raw.githubusercontent.com/areqq/sshd-tunel/main/install.sh | sh -s -- <port> [password]
+#   curl -fsSL https://raw.githubusercontent.com/areqq/sshd-tunnel/main/install.sh | sh -s -- <port> [password]
 #
 # With no arguments it only installs and prints how to start the server.
-# The chroot is unpacked into ./sshd-tunel; an existing installation keeps its
+# The chroot is unpacked into ./sshd-tunnel; an existing installation keeps its
 # SSH host key so clients do not see a changed fingerprint after an upgrade.
 #
 # Environment:
-#   SSHD_TUNEL_REPO     owner/name          (default: areqq/sshd-tunel)
-#   SSHD_TUNEL_VERSION  release tag or latest (default: latest)
-#   SSHD_TUNEL_ARCH     architecture        (default: x86_64)
-#   SSHD_TUNEL_DIR      install directory   (default: ./sshd-tunel)
+#   SSHD_TUNNEL_REPO     owner/name          (default: areqq/sshd-tunnel)
+#   SSHD_TUNNEL_VERSION  release tag or latest (default: latest)
+#   SSHD_TUNNEL_ARCH     architecture        (default: x86_64)
+#   SSHD_TUNNEL_DIR      install directory   (default: ./sshd-tunnel)
 
 set -eu
 
-PROG='sshd-tunel-install'
-REPO="${SSHD_TUNEL_REPO:-areqq/sshd-tunel}"
-VERSION="${SSHD_TUNEL_VERSION:-latest}"
-ARCH="${SSHD_TUNEL_ARCH:-x86_64}"
-DEST="${SSHD_TUNEL_DIR:-./sshd-tunel}"
+PROG='sshd-tunnel-install'
+REPO="${SSHD_TUNNEL_REPO:-areqq/sshd-tunnel}"
+VERSION="${SSHD_TUNNEL_VERSION:-latest}"
+ARCH="${SSHD_TUNNEL_ARCH:-x86_64}"
+DEST="${SSHD_TUNNEL_DIR:-./sshd-tunnel}"
 
-TARBALL="sshd-tunel-$ARCH.tgz"
+TARBALL="sshd-tunnel-$ARCH.tgz"
 if [ "$VERSION" = 'latest' ]; then
 	BASE_URL="https://github.com/$REPO/releases/latest/download"
 else
@@ -71,16 +71,16 @@ log 'checksum verified'
 # -------------------------------------------------------------------- unpack
 mkdir -p "$WORKDIR/unpacked"
 tar xzf "$WORKDIR/$TARBALL" -C "$WORKDIR/unpacked"
-[ -d "$WORKDIR/unpacked/sshd-tunel" ] || die 'unexpected tarball layout'
+[ -d "$WORKDIR/unpacked/sshd-tunnel" ] || die 'unexpected tarball layout'
 
 OLD_HOST_KEY="$DEST/rootfs/etc/ssh/ssh_host_rsa_key"
 if [ -f "$OLD_HOST_KEY" ]; then
 	# Carrying the host key across upgrades keeps Dropbear clients that store
 	# host keys from treating the new install as a different server.
 	log 'preserving the existing SSH host key'
-	cp "$OLD_HOST_KEY" "$WORKDIR/unpacked/sshd-tunel/rootfs/etc/ssh/ssh_host_rsa_key"
+	cp "$OLD_HOST_KEY" "$WORKDIR/unpacked/sshd-tunnel/rootfs/etc/ssh/ssh_host_rsa_key"
 	[ -f "$OLD_HOST_KEY.pub" ] && \
-		cp "$OLD_HOST_KEY.pub" "$WORKDIR/unpacked/sshd-tunel/rootfs/etc/ssh/ssh_host_rsa_key.pub"
+		cp "$OLD_HOST_KEY.pub" "$WORKDIR/unpacked/sshd-tunnel/rootfs/etc/ssh/ssh_host_rsa_key.pub"
 fi
 
 if [ -e "$DEST" ]; then
@@ -88,7 +88,7 @@ if [ -e "$DEST" ]; then
 	rm -rf "$DEST"
 fi
 mkdir -p "$(dirname -- "$DEST")"
-mv "$WORKDIR/unpacked/sshd-tunel" "$DEST"
+mv "$WORKDIR/unpacked/sshd-tunnel" "$DEST"
 log "installed into $DEST"
 
 # --------------------------------------------------------------------- start

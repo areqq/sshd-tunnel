@@ -1,4 +1,4 @@
-# sshd-tunel — design
+# sshd-tunnel — design
 
 Status: implemented. Written before the code, updated with what the
 implementation actually found out.

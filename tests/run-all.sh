@@ -3,7 +3,7 @@
 #
 #   tests/run-all.sh [install-dir]
 #
-# Defaults to dist/stage/sshd-tunel, which is what build/build.sh leaves
+# Defaults to dist/stage/sshd-tunnel, which is what build/build.sh leaves
 # behind. Needs root or passwordless sudo, python3, and a toolchain for the
 # Dropbear 2014 client (built once into dist/).
 
@@ -23,7 +23,7 @@ else
 	# Two reasons: it is what users get, and the chroot's entrypoint chowns its
 	# own root to root:root, which would leave the staging directory unwritable
 	# for the next build.
-	TARBALL="dist/sshd-tunel-x86_64.tgz"
+	TARBALL="dist/sshd-tunnel-x86_64.tgz"
 	[ -f "$TARBALL" ] || {
 		printf 'run-all: %s not found — run build/build.sh first\n' "$TARBALL" >&2
 		exit 1
@@ -33,7 +33,7 @@ else
 	# Unpacked as root so the archive's ownership survives: sshd enforces
 	# StrictModes on /var/empty and on the path to authorized_keys.
 	$SUDO tar xzf "$TARBALL" -C "$UNPACK_DIR"
-	INSTALL_DIR="$UNPACK_DIR/sshd-tunel"
+	INSTALL_DIR="$UNPACK_DIR/sshd-tunnel"
 	cleanup_unpack() {
 		for leftover in $(awk -v p="$INSTALL_DIR/rootfs/" 'index($2, p) == 1 { print $2 }' \
 			/proc/mounts | sort -r); do

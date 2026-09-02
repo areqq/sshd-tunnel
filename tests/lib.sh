@@ -1,4 +1,4 @@
-# Shared helpers for the sshd-tunel test suite. Sourced, not executed.
+# Shared helpers for the sshd-tunnel test suite. Sourced, not executed.
 #
 # Tests run against an unpacked release directory (the one holding `run` and
 # `rootfs/`), on the host rather than in an unprivileged container: the chroot
@@ -7,11 +7,11 @@
 # Requires: root or passwordless sudo, python3 (for the endpoint used to prove
 # that bytes actually traverse the tunnel), and a built Dropbear 2014 client.
 
-: "${INSTALL_DIR:=dist/stage/sshd-tunel}"
+: "${INSTALL_DIR:=dist/stage/sshd-tunnel}"
 : "${DROPBEAR_DIR:=dist/dropbear-2014.63}"
 : "${TEST_TMP:=$(mktemp -d)}"
 
-ECHO_TOKEN='sshd-tunel-tunnel-works'
+ECHO_TOKEN='sshd-tunnel-tunnel-works'
 FAILURES=0
 CHECKS=0
 

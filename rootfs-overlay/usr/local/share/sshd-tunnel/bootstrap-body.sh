@@ -10,7 +10,7 @@
 
 set -u
 
-PROG='sshd-tunel'
+PROG='sshd-tunnel'
 say() { printf '%s: %s\n' "$PROG" "$*" >&2; }
 
 have() {
@@ -18,7 +18,7 @@ have() {
 	which "$1" >/dev/null 2>&1
 }
 
-WORKDIR="${TMPDIR:-/tmp}/sshd-tunel.$$"
+WORKDIR="${TMPDIR:-/tmp}/sshd-tunnel.$$"
 mkdir -p "$WORKDIR" || { say "cannot create $WORKDIR"; exit 1; }
 trap 'rm -rf "$WORKDIR"' EXIT INT TERM HUP
 

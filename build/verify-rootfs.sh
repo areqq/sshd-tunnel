@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fail the build if the produced rootfs is not what sshd-tunel needs.
+# Fail the build if the produced rootfs is not what sshd-tunnel needs.
 #
 #   build/verify-rootfs.sh <rootfs>
 #
@@ -39,7 +39,7 @@ for f in \
 	bin/busybox-extras \
 	bin/sh \
 	usr/local/bin/tunnel-only \
-	usr/local/share/sshd-tunel/bootstrap-body.sh \
+	usr/local/share/sshd-tunnel/bootstrap-body.sh \
 	etc/ssh/sshd_config.tmpl
 do
 	if [ -e "$ROOTFS/$f" ]; then ok "$f"; else bad "missing $f"; fi
