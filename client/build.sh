@@ -119,10 +119,16 @@ fi
 # standard fix (wrap those archives in -Wl,--start-group/--end-group) needs
 # a patch to dropbear's own Makefile.in, not just CFLAGS/LDFLAGS here, so
 # it's a separate, bigger change if it's ever worth doing.
-# -fno-(asynchronous-)unwind-tables drops CFI unwind data neither project
-# uses (no C++ exceptions, no backtrace() calls) — safe on both sides, no
-# such interaction, and it's a real (if modest) size win on its own.
-CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables $ACFLAGS"
+# -fno-(asynchronous-)unwind-tables was also tried (real ~40-100 KB savings
+# on x86_64/i686/aarch64, a byte-identical no-op on armv7/armv5/mips/mipsel)
+# and reverted: on the real GitHub Actions runner (never reproduced locally),
+# a WITH_SFTP=1 mips/mipsel build hung indefinitely mid SFTP-transfer under
+# qemu-mips-static — auth succeeded, the transfer itself never completed.
+# Isolating it to just the OpenSSH side (dropbear's own core build was
+# verified fine on mips, byte-identical output) is a plausible next step but
+# unverified — reverted outright rather than guess again through another
+# slow, hang-risking CI cycle.
+CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer $ACFLAGS"
 LDFLAGS="-static -Wl,--gc-sections"
 [ "${WITH_SFTP:-0}" = '1' ] && CFLAGS="$CFLAGS -DDBMULTI_sftp"
 
@@ -186,7 +192,7 @@ if [ "${WITH_SFTP:-0}" = '1' ]; then
 	( cd "$OSRC" && ./configure --host="$HOST_TRIPLE" CC="$CC" \
 		--without-openssl --without-zlib --without-pam \
 		--without-selinux --without-kerberos5 --disable-utmp --disable-wtmp \
-		CFLAGS="-Os -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables" \
+		CFLAGS="-Os -ffunction-sections -fdata-sections" \
 		LDFLAGS="-static -Wl,--gc-sections" \
 		ac_cv_func_setresuid=yes ac_cv_func_setresgid=yes \
 		>"$OWORK/configure.log" 2>&1 ) || { tail -25 "$OWORK/configure.log" >&2; die 'openssh configure failed'; }
