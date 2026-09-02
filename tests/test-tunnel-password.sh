@@ -42,7 +42,7 @@ fi
 ok "sshd is listening on $PORT"
 
 check 'banner reports password-only auth' 'auth mode        : password only' "$(server_log)"
-check_absent 'no private key is printed in password mode' 'BEGIN RSA PRIVATE KEY' "$(server_log)"
+check_absent 'no private key is printed in password mode' 'PRIVATE KEY-----' "$(server_log)"
 
 HOME="$TEST_TMP" DROPBEAR_PASSWORD="$PASSWORD" dbclient_2014 -y -y -K 30 -I 0 -N \
 	-R "$RPORT:127.0.0.1:$DEVPORT" \

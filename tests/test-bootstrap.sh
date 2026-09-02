@@ -106,7 +106,7 @@ wait_for_port "$HTTP_PORT2" 20 || fail 'the bootstrap HTTP server did not start 
 
 URL2="$(extract_bootstrap_url)"
 curl -fsS -o "$TEST_TMP/b2" "$URL2" || { fail 'cannot fetch the password-mode bootstrap'; summary; exit 1; }
-check_absent 'the password-mode bootstrap embeds no private key' 'BEGIN RSA PRIVATE KEY' "$(cat "$TEST_TMP/b2")"
+check_absent 'the password-mode bootstrap embeds no private key' 'PRIVATE KEY-----' "$(cat "$TEST_TMP/b2")"
 check 'it uses DROPBEAR_PASSWORD' 'DROPBEAR_PASSWORD' "$(cat "$TEST_TMP/b2")"
 
 PATH="$DROPBEAR_DIR:$PATH" HOME="$TEST_TMP" TMPDIR="$TEST_TMP" \

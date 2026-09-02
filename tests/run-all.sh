@@ -56,6 +56,7 @@ tests/build-dropbear-2014.sh "$DROPBEAR_DIR"
 FAILED=''
 for test in \
 	tests/test-tunnel-key.sh \
+	tests/test-key-types.sh \
 	tests/test-tunnel-password.sh \
 	tests/test-restrictions.sh \
 	tests/test-bootstrap.sh

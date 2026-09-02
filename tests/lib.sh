@@ -132,8 +132,10 @@ stop_server() {
 server_log() { cat "$SERVER_LOG" 2>/dev/null; }
 
 extract_client_key() {
-	# Writes the printed PEM key to $1
-	sed -n '/BEGIN RSA PRIVATE KEY/,/END RSA PRIVATE KEY/p' "$SERVER_LOG" > "$1"
+	# Writes the printed PEM key to $1. The BEGIN line names the algorithm
+	# ("RSA PRIVATE KEY", "EC PRIVATE KEY"), so the marker is matched loosely.
+	sed -n '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/p' \
+		"$SERVER_LOG" > "$1"
 	chmod 600 "$1"
 	[ -s "$1" ]
 }
