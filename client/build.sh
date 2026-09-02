@@ -111,7 +111,18 @@ fi
 "$HERE/gen_cred_slots.sh" "$SRC" >/dev/null || die 'slot generation failed'
 
 # ------------------------------------------------------------------- build
-CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer $ACFLAGS"
+# -flto was tried here and reverted: dropbear's bundled libtomcrypt.a /
+# libtommath.a are plain (non-LTO) archives placed once at the end of the
+# link line, and gcc's LTO recompilation discovers its need for their
+# symbols too late for that single archive scan — every arch failed with
+# "undefined reference" into an "<artificial>" (LTO-merged) unit. The
+# standard fix (wrap those archives in -Wl,--start-group/--end-group) needs
+# a patch to dropbear's own Makefile.in, not just CFLAGS/LDFLAGS here, so
+# it's a separate, bigger change if it's ever worth doing.
+# -fno-(asynchronous-)unwind-tables drops CFI unwind data neither project
+# uses (no C++ exceptions, no backtrace() calls) — safe on both sides, no
+# such interaction, and it's a real (if modest) size win on its own.
+CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables $ACFLAGS"
 LDFLAGS="-static -Wl,--gc-sections"
 [ "${WITH_SFTP:-0}" = '1' ] && CFLAGS="$CFLAGS -DDBMULTI_sftp"
 
@@ -175,7 +186,7 @@ if [ "${WITH_SFTP:-0}" = '1' ]; then
 	( cd "$OSRC" && ./configure --host="$HOST_TRIPLE" CC="$CC" \
 		--without-openssl --without-zlib --without-pam \
 		--without-selinux --without-kerberos5 --disable-utmp --disable-wtmp \
-		CFLAGS="-Os -ffunction-sections -fdata-sections" \
+		CFLAGS="-Os -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables" \
 		LDFLAGS="-static -Wl,--gc-sections" \
 		ac_cv_func_setresuid=yes ac_cv_func_setresgid=yes \
 		>"$OWORK/configure.log" 2>&1 ) || { tail -25 "$OWORK/configure.log" >&2; die 'openssh configure failed'; }

@@ -108,6 +108,27 @@ client/build.sh mipsel
 Needs `curl`, `tar`, `make` and a host C compiler; everything arch-specific is
 fetched on demand.
 
+### Size
+
+Both builds drop CFI unwind tables (`-fno-unwind-tables
+-fno-asynchronous-unwind-tables` — neither project throws C++ exceptions or
+calls `backtrace()`), on top of the existing `-Os -ffunction-sections
+--gc-sections`. Real savings on x86_64/i686/aarch64 (~40-100 KB); a no-op on
+armv7/armv5/mips/mipsel, whose toolchains apparently don't emit these tables
+for plain C anyway.
+
+`-flto` was also tried, for the core (non-SFTP) build only — every arch
+failed to link: dropbear's bundled `libtomcrypt.a`/`libtommath.a` are plain,
+non-LTO archives placed once at the end of the link line, and gcc's LTO
+recompilation discovers its need for their symbols too late for that single
+archive scan. The standard fix (wrap those archives in `-Wl,--start-group` /
+`--end-group`) needs a patch to dropbear's own `Makefile.in`, not just
+`CFLAGS`/`LDFLAGS` — left as a possible follow-up, not done here. (It was
+never tried on the `WITH_SFTP=1` side: LTO's real compilation happens from
+each object's embedded IR at final-link time, which would silently ignore
+the `objcopy --redefine-sym` renames the SFTP merge depends on — see below —
+so mixing the two needs more care than a CFLAGS change.)
+
 ## How the source is modified
 
 Dropbear is patched by `patches/embedded-slots.patch` (applies to a pristine
