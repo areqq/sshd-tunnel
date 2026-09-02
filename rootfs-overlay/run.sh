@@ -1,5 +1,5 @@
 #!/bin/sh
-# sshd-tunel entrypoint, executed INSIDE the chroot.
+# sshd-tunnel entrypoint, executed INSIDE the chroot.
 #
 #   /run.sh <port> [password] [options]
 #
@@ -13,24 +13,24 @@
 # user-facing command is still `./run <port>`.
 #
 # Environment:
-#   SSHD_TUNEL_PASSWORD   password, as an alternative to argument 2 (keeps it
-#                         out of the host's process list)
-#   SSHD_TUNEL_IP         space-separated server addresses to advertise; when
-#                         unset they are detected from the interfaces
+#   SSHD_TUNNEL_PASSWORD   password, as an alternative to argument 2 (keeps it
+#                          out of the host's process list)
+#   SSHD_TUNNEL_IP         space-separated server addresses to advertise; when
+#                          unset they are detected from the interfaces
 
 set -eu
 
-PROG='sshd-tunel'
+PROG='sshd-tunnel'
 HOST_KEY='/etc/ssh/ssh_host_rsa_key'
 CONFIG_TMPL='/etc/ssh/sshd_config.tmpl'
 CONFIG='/etc/ssh/sshd_config.active'
-BOOTSTRAP_BODY='/usr/local/share/sshd-tunel/bootstrap-body.sh'
+BOOTSTRAP_BODY='/usr/local/share/sshd-tunnel/bootstrap-body.sh'
 WEB_ROOT='/srv/www'
-RUNTIME_DIR='/run/sshd-tunel'
+RUNTIME_DIR='/run/sshd-tunnel'
 CLIENT_KEY="$RUNTIME_DIR/client_key"
 
 PORT=''
-PASSWORD="${SSHD_TUNEL_PASSWORD:-}"
+PASSWORD="${SSHD_TUNNEL_PASSWORD:-}"
 HTTP_PORT=''
 HTTP_ENABLED=1
 PERMIT_LISTEN='*:*'
@@ -296,8 +296,8 @@ chmod 700 /home/tcp/.ssh
 chmod 600 "$AUTHORIZED_KEYS"
 
 # ------------------------------------------------------------- server addresses
-if [ -n "${SSHD_TUNEL_IP:-}" ]; then
-	SERVER_IPS="$SSHD_TUNEL_IP"
+if [ -n "${SSHD_TUNNEL_IP:-}" ]; then
+	SERVER_IPS="$SSHD_TUNNEL_IP"
 else
 	SERVER_IPS="$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]}' | tr '\n' ' ')"
 fi

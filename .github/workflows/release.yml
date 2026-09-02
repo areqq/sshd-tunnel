@@ -39,15 +39,15 @@ jobs:
 
       - name: Show what was built
         run: |
-          cat dist/stage/sshd-tunel/VERSION
+          cat dist/stage/sshd-tunnel/VERSION
           ls -lh dist/
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-tarball
           path: |
-            dist/sshd-tunel-x86_64.tgz
-            dist/sshd-tunel-x86_64.tgz.sha256
+            dist/sshd-tunnel-x86_64.tgz
+            dist/sshd-tunnel-x86_64.tgz.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -80,17 +80,17 @@ jobs:
       # StrictModes on /var/empty and on the path to authorized_keys.
       - name: Unpack the release
         run: |
-          sudo mkdir -p /opt/sshd-tunel-test
-          sudo tar xzf dist/sshd-tunel-x86_64.tgz -C /opt/sshd-tunel-test
-          ls -l /opt/sshd-tunel-test/sshd-tunel
+          sudo mkdir -p /opt/sshd-tunnel-test
+          sudo tar xzf dist/sshd-tunnel-x86_64.tgz -C /opt/sshd-tunnel-test
+          ls -l /opt/sshd-tunnel-test/sshd-tunnel
 
       - name: Verify the published checksum
         run: |
           cd dist
-          sha256sum -c sshd-tunel-x86_64.tgz.sha256
+          sha256sum -c sshd-tunnel-x86_64.tgz.sha256
 
       - name: Run the test suite
-        run: sudo -E tests/run-all.sh /opt/sshd-tunel-test/sshd-tunel
+        run: sudo -E tests/run-all.sh /opt/sshd-tunnel-test/sshd-tunnel
 
       - name: Server logs on failure
         if: failure()
@@ -121,6 +121,6 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            dist/sshd-tunel-x86_64.tgz \
-            dist/sshd-tunel-x86_64.tgz.sha256 \
+            dist/sshd-tunnel-x86_64.tgz \
+            dist/sshd-tunnel-x86_64.tgz.sha256 \
             install.sh

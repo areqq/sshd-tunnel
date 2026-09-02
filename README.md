@@ -1,4 +1,4 @@
-# sshd-tunel
+# sshd-tunnel
 
 A self-contained Alpine chroot (about 4 MB packed) holding an OpenSSH server
 whose only purpose is to accept a **reverse TCP forward** from an old device
@@ -14,25 +14,25 @@ against a Dropbear 2014.63 client compiled from source in CI.
 ## Install and run
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/areqq/sshd-tunel/main/install.sh | sh -s -- 2222
+curl -fsSL https://raw.githubusercontent.com/areqq/sshd-tunnel/main/install.sh | sh -s -- 2222
 ```
 
 That downloads the latest release, verifies its SHA-256, unpacks it into
-`./sshd-tunel/`, and starts the server on port 2222 with **key-only**
+`./sshd-tunnel/`, and starts the server on port 2222 with **key-only**
 authentication — printing a freshly generated private key you hand to the
 device.
 
 With a password instead:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/areqq/sshd-tunel/main/install.sh | sh -s -- 2222 'my-password'
+curl -fsSL https://raw.githubusercontent.com/areqq/sshd-tunnel/main/install.sh | sh -s -- 2222 'my-password'
 ```
 
 Install without starting, then run it yourself:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/areqq/sshd-tunel/main/install.sh | sh
-sudo ./sshd-tunel/run 2222
+curl -fsSL https://raw.githubusercontent.com/areqq/sshd-tunnel/main/install.sh | sh
+sudo ./sshd-tunnel/run 2222
 ```
 
 Root is required — `chroot` and the bind mounts need it. The wrapper re-execs
@@ -41,7 +41,7 @@ itself under `sudo` when it is not already root.
 Only `wget`? Same thing:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/areqq/sshd-tunel/main/install.sh | sh -s -- 2222
+wget -qO- https://raw.githubusercontent.com/areqq/sshd-tunnel/main/install.sh | sh -s -- 2222
 ```
 
 ## What it does
@@ -82,7 +82,7 @@ the previous one. Copy it while it is on screen.
 ### Key types
 
 ```sh
-sudo ./sshd-tunel/run 2222 --key-type ecdsa256
+sudo ./sshd-tunnel/run 2222 --key-type ecdsa256
 ```
 
 | `--key-type` | Dropbear 2014.63 | Notes |
@@ -111,10 +111,10 @@ In password mode no client key is generated, and `--key-type` is ignored with a
 notice.
 
 Passing the password as an argument makes it visible in the host's process
-list; `SSHD_TUNEL_PASSWORD` avoids that:
+list; `SSHD_TUNNEL_PASSWORD` avoids that:
 
 ```sh
-SSHD_TUNEL_PASSWORD='my-password' sudo -E ./sshd-tunel/run 2222
+SSHD_TUNNEL_PASSWORD='my-password' sudo -E ./sshd-tunnel/run 2222
 ```
 
 ## Bootstrapping the device over HTTP
@@ -167,7 +167,7 @@ Dropbear sends as `localhost`, not `0.0.0.0`. So the default is `*:*`, and
 narrowing is done by listing bare port numbers, which match any bind address:
 
 ```sh
-sudo ./sshd-tunel/run 2222 --listen '10022 5900'
+sudo ./sshd-tunnel/run 2222 --listen '10022 5900'
 ```
 
 ## Connecting by hand
@@ -250,7 +250,7 @@ cannot ship silently broken.
 CI does this on every push, but locally:
 
 ```sh
-build/build.sh          # podman or docker; writes dist/sshd-tunel-x86_64.tgz
+build/build.sh          # podman or docker; writes dist/sshd-tunnel-x86_64.tgz
 ```
 
 Or on an Alpine host, as root:
@@ -280,7 +280,7 @@ build/packages.txt          what goes into the chroot
 rootfs-overlay/run.sh       entrypoint inside the chroot
 rootfs-overlay/etc/ssh/sshd_config.tmpl
 rootfs-overlay/usr/local/bin/tunnel-only
-rootfs-overlay/usr/local/share/sshd-tunel/bootstrap-body.sh
+rootfs-overlay/usr/local/share/sshd-tunnel/bootstrap-body.sh
 run                         host wrapper: mounts, chroot, cleanup
 install.sh                  download a release and start it
 tests/                      the suite, including the Dropbear 2014 builder

@@ -21,8 +21,8 @@ ALPINE_MIRROR="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}"
 REPO_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 OUT_DIR="${OUT_DIR:-$REPO_DIR/dist}"
 STAGE_DIR="$OUT_DIR/stage"
-ROOTFS="$STAGE_DIR/sshd-tunel/rootfs"
-TARBALL="$OUT_DIR/sshd-tunel-$ARCH.tgz"
+ROOTFS="$STAGE_DIR/sshd-tunnel/rootfs"
+TARBALL="$OUT_DIR/sshd-tunnel-$ARCH.tgz"
 
 TCP_UID=1000
 TCP_GID=1000
@@ -145,7 +145,7 @@ OPENSSH_VER="$(awk '/^P:openssh-server$/ { found = 1 }
 	found && /^V:/ { print substr($0, 3); exit }' "$ROOTFS/lib/apk/db/installed" 2>/dev/null || true)"
 [ -n "$OPENSSH_VER" ] || OPENSSH_VER='unknown'
 {
-	printf 'name:           sshd-tunel\n'
+	printf 'name:           sshd-tunnel\n'
 	printf 'version:        %s\n' "${VERSION:-dev}"
 	printf 'built:          %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 	printf 'arch:           %s\n' "$ARCH"
@@ -153,17 +153,17 @@ OPENSSH_VER="$(awk '/^P:openssh-server$/ { found = 1 }
 	printf 'openssh:        %s\n' "$OPENSSH_VER"
 	printf '\npackages:\n'
 	awk '/^P:/{p=substr($0,3)} /^V:/{print "  " p " " substr($0,3)}' "$ROOTFS/lib/apk/db/installed" | sort
-} > "$STAGE_DIR/sshd-tunel/VERSION"
+} > "$STAGE_DIR/sshd-tunnel/VERSION"
 
 # ------------------------------------------------------------------- package
 log 'assembling tarball'
-cp "$REPO_DIR/run" "$STAGE_DIR/sshd-tunel/run"
-chmod 755 "$STAGE_DIR/sshd-tunel/run"
-cp "$REPO_DIR/README.md" "$STAGE_DIR/sshd-tunel/README.md"
+cp "$REPO_DIR/run" "$STAGE_DIR/sshd-tunnel/run"
+chmod 755 "$STAGE_DIR/sshd-tunnel/run"
+cp "$REPO_DIR/README.md" "$STAGE_DIR/sshd-tunnel/README.md"
 
 mkdir -p "$OUT_DIR"
 rm -f "$TARBALL"
-tar czf "$TARBALL" -C "$STAGE_DIR" sshd-tunel
+tar czf "$TARBALL" -C "$STAGE_DIR" sshd-tunnel
 ( cd "$OUT_DIR" && sha256sum "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" )
 
 log "rootfs:  $(du -sh "$ROOTFS" | cut -f1)"
