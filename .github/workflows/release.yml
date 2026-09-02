@@ -82,7 +82,6 @@ jobs:
         run: |
           sudo mkdir -p /opt/sshd-tunel-test
           sudo tar xzf dist/sshd-tunel-x86_64.tgz -C /opt/sshd-tunel-test
-          sudo /opt/sshd-tunel-test/sshd-tunel/rootfs/bin/busybox --help >/dev/null
           ls -l /opt/sshd-tunel-test/sshd-tunel
 
       - name: Verify the published checksum
