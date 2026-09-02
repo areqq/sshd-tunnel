@@ -19,6 +19,7 @@ TARBALL="${2:?usage: verify-sftp.sh <arch> <tarball.tgz>}"
 
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'verify-sftp: %s\n' "$*" >&2; exit 1; }
+trap 'printf "verify-sftp: TRAP set -e at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 case "$ARCH" in
 	x86_64)  QEMU=qemu-x86_64-static ;;

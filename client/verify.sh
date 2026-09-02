@@ -27,6 +27,7 @@ TARBALL="${2:?usage: verify.sh <arch> <tarball.tgz>}"
 
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'verify: %s\n' "$*" >&2; exit 1; }
+trap 'printf "verify: TRAP set -e at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 case "$ARCH" in
 	x86_64)  QEMU=qemu-x86_64-static ;;
