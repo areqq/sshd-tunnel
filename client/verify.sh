@@ -20,7 +20,7 @@
 #
 # Needs: qemu-<arch>-static on PATH (Ubuntu's qemu-user-static package),
 # unless arch is the host's native arch.
-set -eu
+set -Eeu # -E: an ERR trap without it is NOT inherited into functions/subshells
 
 ARCH="${1:?usage: verify.sh <arch> <tarball.tgz>}"
 TARBALL="${2:?usage: verify.sh <arch> <tarball.tgz>}"
