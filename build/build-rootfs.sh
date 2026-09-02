@@ -71,8 +71,10 @@ log "creating unprivileged tunnel account 'tcp' (uid $TCP_UID)"
 grep -q '^tcp:' "$ROOTFS/etc/group" || printf 'tcp:x:%s:\n' "$TCP_GID" >> "$ROOTFS/etc/group"
 grep -q '^tcp:' "$ROOTFS/etc/passwd" || \
 	printf 'tcp:x:%s:%s:reverse tunnel account:/home/tcp:/bin/sh\n' "$TCP_UID" "$TCP_GID" >> "$ROOTFS/etc/passwd"
-# '!' as the password hash means "locked": no password will ever match. run.sh
-# replaces it only when a password is supplied on the command line.
+# '!' means "locked" and is the right shipping default: an unstarted chroot
+# should let nobody in. /run.sh always replaces it — with a real hash in
+# password mode, and with a hash of a discarded random string in key mode,
+# because OpenSSH refuses a locked account even for public-key authentication.
 grep -q '^tcp:' "$ROOTFS/etc/shadow" 2>/dev/null || \
 	printf 'tcp:!:20000:0:99999:7:::\n' >> "$ROOTFS/etc/shadow"
 
@@ -136,7 +138,11 @@ mkdir -p "$ROOTFS/var/cache/apk"
 "$REPO_DIR/build/verify-rootfs.sh" "$ROOTFS"
 
 # ------------------------------------------------------------------- version
-OPENSSH_VER="$(awk -F'[ -]' '/^P:openssh-server$/{found=1} found&&/^V:/{print $2; exit}' "$ROOTFS/lib/apk/db/installed" 2>/dev/null || true)"
+# apk's installed database is a stanza per package: a P: line naming it,
+# then a V: line with the full version. Splitting that V: line on '-' would
+# yield only the pkgrel, which is how "openssh: r1" ended up in v0.1.1.
+OPENSSH_VER="$(awk '/^P:openssh-server$/ { found = 1 }
+	found && /^V:/ { print substr($0, 3); exit }' "$ROOTFS/lib/apk/db/installed" 2>/dev/null || true)"
 [ -n "$OPENSSH_VER" ] || OPENSSH_VER='unknown'
 {
 	printf 'name:           sshd-tunel\n'
