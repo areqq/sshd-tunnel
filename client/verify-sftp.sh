@@ -3,15 +3,19 @@
 #
 # End-to-end verification of one WITH_SFTP=1 dropbear-tunnel tarball: proves a
 # real file transfer both ways, under qemu-<arch>-static, not just that the
-# sftp/sftp-server binaries link and run.
+# merged binary links.
 #
 #   client/verify-sftp.sh <arch> <sftp-tarball.tgz>
 #
-# Server side: the embedded dropbear server execs /tmp/sftp-server (staged the
-# way bootstrap.sh --serve does) for the SFTP subsystem.
-# Client side: the bundled OpenSSH `sftp` routes its session through the
-# packaged `dbclient` symlink (`sftp -S ./dbclient`, per the README) — the
-# multi-call binary only dispatches correctly when invoked under that name.
+# SFTP is merged into dropbearmulti itself as two more multi-call applets
+# ("sftp", "sftp-server") — there are no separate sftp/sftp-server binaries to
+# ship or stage.
+# Server side: the embedded dropbear server execs /tmp/sftp-server (staged as
+# a symlink to dropbearmulti, the way bootstrap.sh --serve does) for the SFTP
+# subsystem; multi-call dispatch keys off basename(argv[0]).
+# Client side: `dropbearmulti sftp` routes its session through the packaged
+# `dbclient` symlink (`-S ./dbclient`) — the multi-call binary only dispatches
+# correctly when the *transport* program is invoked under that name.
 set -Eeu # -E: an ERR trap without it is NOT inherited into functions/subshells
 
 ARCH="${1:?usage: verify-sftp.sh <arch> <tarball.tgz>}"
@@ -36,21 +40,20 @@ RUN="$QEMU"
 
 WORK="$(mktemp -d)"
 SPID=""
-trap '[ -n "$SPID" ] && kill "$SPID" 2>/dev/null; rm -rf "$WORK" /tmp/sftp-server-verify-$$' EXIT INT TERM
+trap '[ -n "$SPID" ] && kill "$SPID" 2>/dev/null; rm -rf "$WORK"; rm -f /tmp/sftp-server' EXIT INT TERM
 
 tar xzf "$TARBALL" -C "$WORK"
 DIR="$(find "$WORK" -maxdepth 1 -type d -name 'dropbear-tunnel-*')"
 BIN="$DIR/dropbearmulti"
 [ -x "$BIN" ] || die "dropbearmulti missing in $TARBALL"
-[ -x "$DIR/sftp" ] || die "sftp client missing in $TARBALL"
-[ -x "$DIR/sftp-server" ] || die "sftp-server missing in $TARBALL"
 [ -L "$DIR/dbclient" ] || die "dbclient symlink missing in $TARBALL (needed for sftp -S)"
+"$BIN" 2>&1 | grep -q "'sftp'" || die "this build has no sftp applet (not built WITH_SFTP=1?)"
 
 PORT=2298
-SFTPSERVER_STAGE="/tmp/sftp-server-verify-$$"
-cp "$DIR/sftp-server" "$SFTPSERVER_STAGE"
-chmod 755 "$SFTPSERVER_STAGE"
-[ "$SFTPSERVER_STAGE" = "/tmp/sftp-server" ] || ln -sf "$SFTPSERVER_STAGE" /tmp/sftp-server
+# SFTPSERVER_PATH is compiled in as the literal "/tmp/sftp-server" — the
+# embedded server execs exactly that path, so the symlink has to live there
+# too, not just under a $$-scoped name.
+ln -sf "$BIN" /tmp/sftp-server
 
 LOGIN_USER="$(id -un)" # the embedded server needs a real local account to log into
 HOME="$WORK"
@@ -83,9 +86,10 @@ wait_for_port
 
 echo "sftp-e2e-payload-$$" >"$WORK/upload.txt"
 
-log 'uploading a file over sftp (client transport: dbclient, server subsystem: sftp-server)'
-out="$($RUN "$DIR/sftp" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+log 'uploading a file over sftp (client transport: dbclient, server subsystem: dropbearmulti sftp-server)'
+out="$($RUN "$BIN" sftp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 	-S "$DIR/dbclient" -P "$PORT" "$LOGIN_USER@127.0.0.1" <<EOF
+pwd
 put $WORK/upload.txt $WORK/downloaded.txt
 EOF
 )" || { printf '%s\n' "$out" >&2; printf -- '--- server.log ---\n' >&2; cat "$WORK/server.log" >&2; die 'sftp put failed'; }

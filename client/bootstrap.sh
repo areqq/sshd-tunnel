@@ -62,12 +62,14 @@ case "$FWD" in *:*:*) ;; *) die "-R must look like rport:host:port, got: $FWD" ;
 # ------------------------------------------------------------- embedded server
 SRV_PID=''
 if [ "$SERVE" -eq 1 ]; then
-	# If a bundled sftp-server is present, stage it where the server expects it
-	# (SFTPSERVER_PATH, compiled as /tmp/sftp-server when built WITH_SFTP=1), so
-	# the SFTP subsystem works on a read-only rootfs that has none of its own.
-	if [ -f "$HERE/sftp-server" ] && [ ! -e /tmp/sftp-server ]; then
-		cp "$HERE/sftp-server" /tmp/sftp-server 2>/dev/null && chmod 755 /tmp/sftp-server 2>/dev/null \
-			&& say 'staged sftp-server at /tmp/sftp-server'
+	# SFTP is merged into dropbearmulti itself as another multi-call applet
+	# (WITH_SFTP=1 builds) — the embedded server execs SFTPSERVER_PATH
+	# (/tmp/sftp-server) for the subsystem, and multi-call dispatch keys off
+	# basename(argv[0]), so a symlink named that way is all it takes. Works on
+	# a read-only rootfs since /tmp is where this is staged, not $HERE.
+	if [ ! -e /tmp/sftp-server ] && "$BIN" 2>&1 | grep -q "'sftp-server'"; then
+		ln -sf "$BIN" /tmp/sftp-server 2>/dev/null \
+			&& say 'staged sftp-server -> dropbearmulti at /tmp/sftp-server'
 	fi
 
 	# -F foreground, -E log to stderr; bind to the loopback host the tunnel

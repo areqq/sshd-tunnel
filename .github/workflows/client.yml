@@ -107,10 +107,12 @@ jobs:
           ls -l client/out/
           file client/out/dropbear-tunnel-${{ matrix.arch }}.tgz
 
-      # Proves a real file transfer round-trip under qemu-<arch>-static: the
-      # embedded server execs the staged sftp-server for the subsystem, and
-      # the bundled sftp client routes its session through the packaged
-      # dbclient symlink (self-exec, so this also exercises binfmt_misc).
+      # Proves a real file transfer round-trip under qemu-<arch>-static: SFTP
+      # is merged into dropbearmulti as two more applets, so the embedded
+      # server execs a /tmp/sftp-server symlink to dropbearmulti for the
+      # subsystem, and `dropbearmulti sftp` routes its session through the
+      # packaged dbclient symlink (self-exec, so this also exercises
+      # binfmt_misc for the nested dispatch).
       - name: Verify SFTP round-trip
         run: client/verify-sftp.sh ${{ matrix.arch }} client/out/dropbear-tunnel-${{ matrix.arch }}.tgz
 

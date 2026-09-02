@@ -92,9 +92,10 @@ log 'applying credential-slot patch and config'
 patch -p1 -d "$SRC" < "$HERE/patches/embedded-slots.patch" >/dev/null || die 'patch failed to apply'
 cp -f "$HERE/localoptions.h" "$SRC/localoptions.h"
 
-# Optional SFTP subsystem in the embedded server (WITH_SFTP=1). Off by default,
-# so the proven core build is untouched. The sftp-server binary itself is built
-# separately by build-sftp.sh and staged at SFTPSERVER_PATH on the device.
+# Optional SFTP, merged into the same binary (WITH_SFTP=1). Off by default, so
+# the proven core build is untouched. OpenSSH's sftp/sftp-server objects are
+# built and linked straight into dropbearmulti as two more multi-call applets
+# ("sftp", "sftp-server") — see the merge step after the dropbear build below.
 if [ "${WITH_SFTP:-0}" = '1' ]; then
 	log 'enabling SFTP server subsystem (WITH_SFTP=1)'
 	{
@@ -103,6 +104,8 @@ if [ "${WITH_SFTP:-0}" = '1' ]; then
 		echo '#undef SFTPSERVER_PATH'
 		echo '#define SFTPSERVER_PATH "/tmp/sftp-server"'
 	} >> "$SRC/localoptions.h"
+	patch -p1 -d "$SRC" < "$HERE/patches/embedded-sftp-dispatch.patch" >/dev/null \
+		|| die 'sftp dispatch patch failed to apply'
 fi
 
 "$HERE/gen_cred_slots.sh" "$SRC" >/dev/null || die 'slot generation failed'
@@ -110,6 +113,7 @@ fi
 # ------------------------------------------------------------------- build
 CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer $ACFLAGS"
 LDFLAGS="-static -Wl,--gc-sections"
+[ "${WITH_SFTP:-0}" = '1' ] && CFLAGS="$CFLAGS -DDBMULTI_sftp"
 
 log "building dropbearmulti for $ARCH ($HOST_TRIPLE)"
 ( cd "$SRC" && ./configure --host="$HOST_TRIPLE" \
@@ -119,9 +123,122 @@ log "building dropbearmulti for $ARCH ($HOST_TRIPLE)"
 	--disable-loginfunc --disable-pututline --disable-pututxline --disable-openpty \
 	>"$WORK/configure.log" 2>&1 ) || { tail -20 "$WORK/configure.log" >&2; die 'configure failed'; }
 
-( cd "$SRC" && make -j"$JOBS" \
+if ( cd "$SRC" && make -j"$JOBS" \
 	PROGRAMS="dbclient dropbear dropbearkey dropbearconvert" MULTI=1 \
-	>"$WORK/make.log" 2>&1 ) || { grep -iE 'error:|undefined' "$WORK/make.log" | head -20 >&2; die 'build failed'; }
+	>"$WORK/make.log" 2>&1 ); then
+	:
+elif [ "${WITH_SFTP:-0}" = '1' ] \
+	&& grep -q 'undefined reference to .ossh_sftp_main.\|undefined reference to .ossh_sftp_server_main.' "$WORK/make.log" \
+	&& ! grep -viE 'undefined reference to .ossh_sftp|collect2: error: ld returned' "$WORK/make.log" | grep -qiE 'error:'; then
+	# Expected at this stage: dbmulti.o references the OpenSSH-side symbols
+	# that don't exist until the merge step below links them in. Every object
+	# file still got compiled — only dropbear's own (incomplete) final link
+	# failed, which the merge step redoes with the missing objects added.
+	log "dropbear's own link is missing the SFTP objects as expected — merging them in next"
+else
+	grep -iE 'error:|undefined' "$WORK/make.log" | head -20 >&2
+	die 'build failed'
+fi
+
+# Without SFTP, dropbear's own link above is the whole build and must have
+# produced the binary already. With SFTP, the merge step below does the real
+# final link instead (see the elif above), so the check happens after it.
+[ "${WITH_SFTP:-0}" = '1' ] || [ -f "$SRC/dropbearmulti" ] || die 'dropbearmulti was not produced'
+
+# ------------------------------------------------------ merge in SFTP (opt-in)
+# Builds OpenSSH's sftp/sftp-server as ordinary objects, resolves the two real
+# symbol collisions with Dropbear (`main`, `atomicio` — everything else is
+# either musl libc, satisfied once for the whole binary, or C-runtime start
+# files that only exist once anyway), and relinks dropbearmulti with them
+# spliced in as two more multi-call applets. See patches/sftp-glue.c and
+# patches/embedded-sftp-dispatch.patch for the two collisions' resolution.
+if [ "${WITH_SFTP:-0}" = '1' ]; then
+	log 'building OpenSSH sftp/sftp-server objects for the in-process merge'
+	OSSH_VER="${OPENSSH_VER:-9.9p2}"
+	OSSH_TARBALL="openssh-$OSSH_VER.tar.gz"
+	OSSH_URL="https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/$OSSH_TARBALL"
+	[ -f "$HERE/src-cache/$OSSH_TARBALL" ] || {
+		log "fetching $OSSH_TARBALL"
+		curl -fsSL -o "$HERE/src-cache/$OSSH_TARBALL" "$OSSH_URL" || die 'openssh source download failed'
+	}
+
+	OWORK="$HERE/.build/openssh-$ARCH"
+	rm -rf "$OWORK"
+	mkdir -p "$OWORK"
+	tar xf "$HERE/src-cache/$OSSH_TARBALL" -C "$OWORK"
+	OSRC="$OWORK/openssh-$OSSH_VER"
+	[ -d "$OSRC" ] || die 'unexpected openssh source layout'
+
+	# sftp/sftp-server do no asymmetric crypto themselves, so drop OpenSSL/zlib
+	# to stay small and fully static; the cache vars answer what configure
+	# cannot probe by running target binaries under cross-compilation.
+	( cd "$OSRC" && ./configure --host="$HOST_TRIPLE" CC="$CC" \
+		--without-openssl --without-zlib --without-pam \
+		--without-selinux --without-kerberos5 --disable-utmp --disable-wtmp \
+		CFLAGS="-Os -ffunction-sections -fdata-sections" \
+		LDFLAGS="-static -Wl,--gc-sections" \
+		ac_cv_func_setresuid=yes ac_cv_func_setresgid=yes \
+		>"$OWORK/configure.log" 2>&1 ) || { tail -25 "$OWORK/configure.log" >&2; die 'openssh configure failed'; }
+
+	# The final `sftp`/`sftp-server` links this produces are discarded — only
+	# the intermediate objects and the two static libs they pulled symbols
+	# from (libssh.a, libopenbsd-compat.a) are used below.
+	( cd "$OSRC" && make -j"$JOBS" sftp-server sftp >"$OWORK/make.log" 2>&1 ) \
+		|| { grep -iE 'error:|undefined' "$OWORK/make.log" | head -20 >&2; die 'openssh build failed'; }
+
+	# Compile the glue file (cleanup_exit + ossh_sftp_server_main, see
+	# sftp-glue.c) with whatever flags OpenSSH's own Makefile used for its C
+	# files, so it sees the same config.h and include paths.
+	OSSH_CC_LINE="$(grep -m1 -- '-c sftp-server-main\.c -o sftp-server-main\.o' "$OWORK/make.log")"
+	[ -n "$OSSH_CC_LINE" ] || die 'could not find an OpenSSH compile line to model the glue build on'
+	cp "$HERE/patches/sftp-glue.c" "$OSRC/sftp-glue.c"
+	( cd "$OSRC" && eval "$(printf '%s' "$OSSH_CC_LINE" | sed 's/sftp-server-main\.c/sftp-glue.c/; s/sftp-server-main\.o/sftp-glue.o/')" ) \
+		|| die 'sftp-glue.c compile failed'
+
+	log 'renaming colliding symbols (atomicio, main) in the OpenSSH objects'
+	OBJCOPY="${CC%-gcc}-objcopy"
+	AR="${CC%-gcc}-ar"
+	RENAME_DIR="$OWORK/renamed"
+	rm -rf "$RENAME_DIR"
+	mkdir -p "$RENAME_DIR/libssh" "$RENAME_DIR/libopenbsd-compat"
+	( cd "$RENAME_DIR/libssh" && "$AR" x "$OSRC/libssh.a" )
+	( cd "$RENAME_DIR/libopenbsd-compat" && "$AR" x "$OSRC/openbsd-compat/libopenbsd-compat.a" )
+	SFTP_OBJS="$OSRC/sftp.o $OSRC/sftp-common.o $OSRC/sftp-client.o $OSRC/sftp-usergroup.o $OSRC/progressmeter.o $OSRC/sftp-glob.o $OSRC/sftp-server.o $OSRC/sftp-glue.o"
+	# atomicio: both projects have their own atomicio.c. Applied everywhere
+	# (definition + every caller) so the rename stays internally consistent;
+	# it's a silent no-op on any object that never mentions the symbol.
+	for o in "$RENAME_DIR"/libssh/*.o "$RENAME_DIR"/libopenbsd-compat/*.o $SFTP_OBJS; do
+		"$OBJCOPY" --redefine-sym atomicio=ossh_atomicio "$o" 2>/dev/null || true
+	done
+	# main: only sftp.c's copy needs it — sftp-server's own main()
+	# (sftp-server-main.c) is deliberately not linked at all; sftp-glue.c
+	# stands in for it.
+	"$OBJCOPY" --redefine-sym main=ossh_sftp_main "$OSRC/sftp.o" || die 'renaming sftp.c main failed'
+	# sftp_realpath: an OpenSSH-internal collision, not a Dropbear one — the
+	# sftp *client* (sftp-client.c) has its own sftp_realpath(conn, path), a
+	# completely different function from the sftp *server*'s simple
+	# sftp_realpath(path, resolved) in sftp-realpath.c (pulled from the
+	# archive). Normally each lives in its own binary; merged, sftp-client.o
+	# is a loose object so its definition wins for *every* caller, silently
+	# handing sftp-server.o's call a `struct sftp_conn *` where it expects a
+	# path string — found by an actual SFTP session crashing (garbage fd,
+	# fatal in send_msg) when a client asked for a realpath.
+	# objcopy takes at most one positional file (a second one is an *output*
+	# path, not a second input) — must be invoked once per file, not given a
+	# list.
+	"$OBJCOPY" --redefine-sym sftp_realpath=ossh_sftp_client_realpath "$OSRC/sftp-client.o" \
+		&& "$OBJCOPY" --redefine-sym sftp_realpath=ossh_sftp_client_realpath "$OSRC/sftp.o" \
+		|| die 'renaming sftp-client.c sftp_realpath failed'
+
+	( cd "$RENAME_DIR/libssh" && "$AR" rcs "$RENAME_DIR/libssh-merged.a" *.o )
+	( cd "$RENAME_DIR/libopenbsd-compat" && "$AR" rcs "$RENAME_DIR/libopenbsd-compat-merged.a" *.o )
+
+	log 'relinking dropbearmulti with the SFTP objects merged in'
+	DB_LINKCMD="$(grep -- '-o dropbearmulti ' "$WORK/make.log" | tail -1)"
+	[ -n "$DB_LINKCMD" ] || die 'could not find the dropbearmulti link command in make.log'
+	( cd "$SRC" && eval "$DB_LINKCMD $SFTP_OBJS -L$RENAME_DIR -lssh-merged -lopenbsd-compat-merged" ) \
+		|| die 'merged dropbearmulti link failed'
+fi
 
 [ -f "$SRC/dropbearmulti" ] || die 'dropbearmulti was not produced'
 "$STRIP" -s "$SRC/dropbearmulti"
@@ -143,13 +260,12 @@ cp "$HERE/README.md" "$STAGE/README.md" 2>/dev/null || true
 chmod 755 "$STAGE/dropbearmulti" "$STAGE/patch-cred"
 [ -f "$STAGE/bootstrap.sh" ] && chmod 755 "$STAGE/bootstrap.sh"
 
-# Bundle the static SFTP binaries if they were built for this arch.
+# SFTP (sftp + sftp-server) is merged into dropbearmulti itself when
+# WITH_SFTP=1 (see the merge step above) — nothing extra to copy. The
+# embedded server execs SFTPSERVER_PATH ("/tmp/sftp-server") for the
+# subsystem: bootstrap.sh --serve symlinks that to dropbearmulti, and
+# multi-call dispatch on basename("/tmp/sftp-server") does the rest.
 if [ "${WITH_SFTP:-0}" = '1' ]; then
-	log 'building and bundling static SFTP (sftp + sftp-server)'
-	"$HERE/build-sftp.sh" "$ARCH" || die 'SFTP build failed (WITH_SFTP=1)'
-	cp "$HERE/out/sftp-$ARCH/sftp-server" "$STAGE/sftp-server"
-	cp "$HERE/out/sftp-$ARCH/sftp" "$STAGE/sftp"
-	chmod 755 "$STAGE/sftp-server" "$STAGE/sftp"
 	# dropbearmulti dispatches on argv[0] or (run bare) on argv[1]; `sftp -S`
 	# execs the transport directly with ssh-style args in argv[1..], so it
 	# needs a binary/symlink literally named 'dbclient' to dispatch correctly.

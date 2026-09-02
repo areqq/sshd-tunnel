@@ -1,0 +1,55 @@
+# Adds "sftp" and "sftp-server" as two more dropbearmulti applets, alongside
+# dbclient/dropbear/dropbearkey/dropbearconvert. Only applied when WITH_SFTP=1
+# (build.sh gates it — this patch is not part of the default build).
+#
+# The actual functions (ossh_sftp_main, ossh_sftp_server_main) come from
+# OpenSSH's own compiled objects, linked into the same binary — see
+# sftp-glue.c and build.sh's WITH_SFTP object-merging logic. This file only
+# adds the two `if (strcmp(progname, ...))` branches and the extern
+# declarations; it doesn't need OpenSSH's headers.
+#
+# Applies to a pristine dropbear-2026.94 source tree (patch -p1 from its root).
+--- a/src/dbmulti.c	2026-07-23 13:00:00.000000000 +0200
++++ b/src/dbmulti.c	2026-09-02 17:00:00.000000000 +0200
+@@ -24,6 +24,11 @@
+ #include "includes.h"
+ #include "dbutil.h"
+
++#ifdef DBMULTI_sftp
++extern int ossh_sftp_main(int argc, char **argv);
++extern int ossh_sftp_server_main(int argc, char **argv);
++#endif
++
+ static int runprog(const char *multipath,
+ 		const char *progname, int argc, char ** argv, int *match) {
+ 	*match = DROPBEAR_SUCCESS;
+@@ -50,6 +55,16 @@
+ 			return scp_main(argc, argv);
+ 		}
+ #endif
++#ifdef DBMULTI_sftp
++		if (strcmp(progname, "sftp") == 0) {
++			return ossh_sftp_main(argc, argv);
++		}
++#endif
++#ifdef DBMULTI_sftp
++		if (strcmp(progname, "sftp-server") == 0) {
++			return ossh_sftp_server_main(argc, argv);
++		}
++#endif
+ 	*match = DROPBEAR_FAILURE;
+ 	return 1;
+ }
+@@ -80,6 +95,12 @@
+ #ifdef DBMULTI_scp
+ 			"'scp' - secure copy\n"
+ #endif
++#ifdef DBMULTI_sftp
++			"'sftp' - the SFTP client (needs a 'dbclient'-named"
++			" transport, e.g. sftp -S ./dbclient)\n"
++			"'sftp-server' - the SFTP server subsystem"
++			" (what the embedded server execs for SFTP sessions)\n"
++#endif
+ 			,
+ 			DROPBEAR_VERSION);
+ 	exit(1);
