@@ -21,7 +21,6 @@
 # Needs: qemu-<arch>-static on PATH (Ubuntu's qemu-user-static package),
 # unless arch is the host's native arch.
 set -Eeu # -E: an ERR trap without it is NOT inherited into functions/subshells
-set -x # TEMP: full execution trace to find a failure the ERR trap isn't catching
 
 ARCH="${1:?usage: verify.sh <arch> <tarball.tgz>}"
 TARBALL="${2:?usage: verify.sh <arch> <tarball.tgz>}"
@@ -62,13 +61,18 @@ export HOME
 mkdir -p "$HOME/.ssh"
 
 wait_for_port() {
+	# fd 3 is opened and closed entirely inside the subshell, so the parent
+	# shell never holds it open — nothing to close out here. (A previous
+	# version tried `exec 3>&-` in the parent to "clean up"; bash treats a
+	# redirection error on a bare `exec` as fatal to the *shell*, unconditionally
+	# and un-catchable by `|| true` or any trap, so closing an fd that was
+	# never open here silently killed the whole script.)
 	i=0
 	while ! (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; do
 		i=$((i + 1))
 		[ "$i" -lt 50 ] || die "server never opened port $PORT"
 		sleep 0.2
 	done
-	exec 3>&- 3<&- 2>/dev/null || true
 }
 
 start_server() {
