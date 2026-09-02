@@ -110,24 +110,21 @@ fetched on demand.
 
 ### Size
 
-Both builds drop CFI unwind tables (`-fno-unwind-tables
--fno-asynchronous-unwind-tables` — neither project throws C++ exceptions or
-calls `backtrace()`), on top of the existing `-Os -ffunction-sections
---gc-sections`. Real savings on x86_64/i686/aarch64 (~40-100 KB); a no-op on
-armv7/armv5/mips/mipsel, whose toolchains apparently don't emit these tables
-for plain C anyway.
+Two size-reduction attempts on top of the existing `-Os -ffunction-sections
+--gc-sections`, both tried and reverted — see `TODO.md` for the full story:
 
-`-flto` was also tried, for the core (non-SFTP) build only — every arch
-failed to link: dropbear's bundled `libtomcrypt.a`/`libtommath.a` are plain,
-non-LTO archives placed once at the end of the link line, and gcc's LTO
-recompilation discovers its need for their symbols too late for that single
-archive scan. The standard fix (wrap those archives in `-Wl,--start-group` /
-`--end-group`) needs a patch to dropbear's own `Makefile.in`, not just
-`CFLAGS`/`LDFLAGS` — left as a possible follow-up, not done here. (It was
-never tried on the `WITH_SFTP=1` side: LTO's real compilation happens from
-each object's embedded IR at final-link time, which would silently ignore
-the `objcopy --redefine-sym` renames the SFTP merge depends on — see below —
-so mixing the two needs more care than a CFLAGS change.)
+- `-flto`: every arch failed to link. Dropbear's bundled
+  `libtomcrypt.a`/`libtommath.a` are plain, non-LTO archives placed once at
+  the end of the link line, and gcc's LTO recompilation discovers its need
+  for their symbols too late for that single archive scan. Fixable, but
+  needs a patch to dropbear's own `Makefile.in` (wrap those archives in
+  `-Wl,--start-group`/`--end-group`), not just a `CFLAGS`/`LDFLAGS` change.
+- `-fno-unwind-tables -fno-asynchronous-unwind-tables`: passed everywhere
+  locally (real ~40-100 KB savings on x86_64/i686/aarch64, a byte-identical
+  no-op on armv7/armv5/mips/mipsel) but hung a real GitHub Actions runner
+  indefinitely mid SFTP-transfer on `WITH_SFTP=1` mips/mipsel, under
+  `qemu-mips-static` — never reproduced locally. Reverted outright rather
+  than ship something that passed local testing but hangs in CI.
 
 ## How the source is modified
 
