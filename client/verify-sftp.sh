@@ -87,7 +87,7 @@ out="$($RUN "$DIR/sftp" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/n
 	-S "$DIR/dbclient" -P "$PORT" q@127.0.0.1 <<EOF
 put $WORK/upload.txt $WORK/downloaded.txt
 EOF
-)" || { printf '%s\n' "$out" >&2; die 'sftp put failed'; }
+)" || { printf '%s\n' "$out" >&2; printf -- '--- server.log ---\n' >&2; cat "$WORK/server.log" >&2; die 'sftp put failed'; }
 
 [ -f "$WORK/downloaded.txt" ] || { printf '%s\n' "$out" >&2; die 'sftp put did not produce the file'; }
 diff -q "$WORK/upload.txt" "$WORK/downloaded.txt" >/dev/null || die 'uploaded file content mismatch'
