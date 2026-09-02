@@ -27,7 +27,7 @@ CONFIG='/etc/ssh/sshd_config.active'
 BOOTSTRAP_BODY='/usr/local/share/sshd-tunel/bootstrap-body.sh'
 WEB_ROOT='/srv/www'
 RUNTIME_DIR='/run/sshd-tunel'
-CLIENT_KEY="$RUNTIME_DIR/client_rsa"
+CLIENT_KEY="$RUNTIME_DIR/client_key"
 
 PORT=''
 PASSWORD="${SSHD_TUNEL_PASSWORD:-}"
@@ -35,6 +35,7 @@ HTTP_PORT=''
 HTTP_ENABLED=1
 PERMIT_LISTEN='*:*'
 EXPOSE='10022:127.0.0.1:22'
+KEY_TYPE='rsa2048'
 CHECK_ONLY=0
 
 HTTPD_PID=''
@@ -68,6 +69,9 @@ Options:
   --expose <r:h:p>    reverse mapping baked into the bootstrap script:
                       server port : device host : device port
                       (default: 10022:127.0.0.1:22)
+  --key-type <type>   client key to generate, one of rsa2048, rsa3072,
+                      rsa4096, ecdsa256, ecdsa384, ecdsa521
+                      (default: rsa2048; ignored in password mode)
   --check-config      render and validate the sshd config, then exit
   -h, --help          this text
 EOF
@@ -95,6 +99,7 @@ while [ $# -gt 0 ]; do
 		--http)         [ $# -ge 2 ] || die '--http needs a port'; HTTP_PORT="$2"; shift ;;
 		--listen)       [ $# -ge 2 ] || die '--listen needs a value'; PERMIT_LISTEN="$2"; shift ;;
 		--expose)       [ $# -ge 2 ] || die '--expose needs r:h:p'; EXPOSE="$2"; shift ;;
+		--key-type)     [ $# -ge 2 ] || die '--key-type needs a type'; KEY_TYPE="$2"; shift ;;
 		--check-config) CHECK_ONLY=1; HTTP_ENABLED=0 ;;
 		-h|--help)      usage; exit 0 ;;
 		*)              die "unknown option: $1" ;;
@@ -130,6 +135,20 @@ esac
 is_port "$EXPOSE_RPORT" || die "invalid reverse port in --expose: $EXPOSE_RPORT"
 is_port "$EXPOSE_LPORT" || die "invalid device port in --expose: $EXPOSE_LPORT"
 [ -n "$EXPOSE_LHOST" ] || die '--expose is missing the device host'
+
+# Only types a Dropbear 2014 client can actually use are offered. ssh-dss is
+# out because OpenSSH 10 removed it from the server side, and ed25519 is out
+# because Dropbear did not gain it until 2020.79 — and because it cannot be
+# written in the PEM form that a 2014 dropbearconvert is able to read.
+case "$KEY_TYPE" in
+	rsa2048)   KEY_ALGO='rsa';   KEY_BITS=2048 ;;
+	rsa3072)   KEY_ALGO='rsa';   KEY_BITS=3072 ;;
+	rsa4096)   KEY_ALGO='rsa';   KEY_BITS=4096 ;;
+	ecdsa256)  KEY_ALGO='ecdsa'; KEY_BITS=256 ;;
+	ecdsa384)  KEY_ALGO='ecdsa'; KEY_BITS=384 ;;
+	ecdsa521)  KEY_ALGO='ecdsa'; KEY_BITS=521 ;;
+	*) die "unknown --key-type: $KEY_TYPE (expected rsa2048, rsa3072, rsa4096, ecdsa256, ecdsa384 or ecdsa521)" ;;
+esac
 
 if [ -n "$PASSWORD" ]; then
 	AUTH_MODE='password'
@@ -245,6 +264,7 @@ if [ "$AUTH_MODE" = 'password' ]; then
 	: > "$AUTHORIZED_KEYS"
 	printf 'tcp:%s\n' "$PASSWORD" | chpasswd -c sha512
 	log 'password authentication enabled for user tcp'
+	[ "$KEY_TYPE" = 'rsa2048' ] || log "--key-type $KEY_TYPE ignored: no client key is generated in password mode"
 else
 	# The account gets a hash of a random string that is immediately
 	# discarded, rather than the conventional '!'. OpenSSH treats a shadow
@@ -255,7 +275,11 @@ else
 	printf 'tcp:%s\n' "$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')" | chpasswd -c sha512
 
 	rm -f "$CLIENT_KEY" "$CLIENT_KEY.pub"
-	ssh-keygen -q -t rsa -b 2048 -m PEM -N '' -C "$PROG client key" -f "$CLIENT_KEY"
+	# PEM rather than the native OpenSSH format: the dropbearconvert shipped
+	# with a 2014 device can only read PEM, which matters for anyone doing the
+	# conversion by hand instead of fetching the pre-converted key.
+	ssh-keygen -q -t "$KEY_ALGO" -b "$KEY_BITS" -m PEM -N '' \
+		-C "$PROG client key" -f "$CLIENT_KEY"
 
 	# 'restrict' turns everything off, then port-forwarding is added back: the
 	# key is useless for anything but the forward, even if sshd_config changed.
@@ -264,7 +288,7 @@ else
 		KEY_OPTS="$KEY_OPTS,permitlisten=\"$pattern\""
 	done
 	printf '%s %s\n' "$KEY_OPTS" "$(cat "$CLIENT_KEY.pub")" > "$AUTHORIZED_KEYS"
-	log 'public-key authentication enabled for user tcp (fresh key)'
+	log "public-key authentication enabled for user tcp (fresh $KEY_TYPE key)"
 fi
 
 chown -R tcp:tcp /home/tcp
@@ -353,14 +377,14 @@ EOF
 else
 	cat <<EOF
 
-  Client private key (RSA 2048, PEM) — regenerated on every start:
+  Client private key ($KEY_TYPE, PEM) — regenerated on every start:
 
 EOF
 	cat "$CLIENT_KEY"
 	cat <<EOF
 
-  Dropbear client (2014 and newer), after saving the key as id_rsa:
-    dropbearconvert openssh dropbear id_rsa id.db
+  Dropbear client (2014 and newer), after saving the key as id_key:
+    dropbearconvert openssh dropbear id_key id.db
     dbclient -y -K 30 -I 0 -N -i id.db \\
       -R $EXPOSE_RPORT:$EXPOSE_LHOST:$EXPOSE_LPORT -p $PORT tcp@$PRIMARY_IP
 EOF

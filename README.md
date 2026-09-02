@@ -79,6 +79,37 @@ restart. `install.sh` carries it across upgrades too.
 The client key is *not* persistent: every start prints a new one and invalidates
 the previous one. Copy it while it is on screen.
 
+### Key types
+
+```sh
+sudo ./sshd-tunel/run 2222 --key-type ecdsa256
+```
+
+| `--key-type` | Dropbear 2014.63 | Notes |
+|---|---|---|
+| `rsa2048` (default) | yes | the safe choice; works with every Dropbear that speaks SSH2 |
+| `rsa3072`, `rsa4096` | yes | slower handshake on 2014-era CPUs |
+| `ecdsa256` | yes | 140-byte key against RSA-2048's 1189, and much cheaper to verify — worth it on weak hardware |
+| `ecdsa384`, `ecdsa521` | yes | as above with larger curves |
+
+Every one of those is asserted end-to-end in `tests/test-key-types.sh`: generated
+on the server, converted by the **2014** `dropbearconvert`, authenticated, and
+carrying real bytes through the forward.
+
+Two types are deliberately unavailable, and asking for them is an error rather
+than a silent fallback:
+
+- **`ed25519`** — Dropbear gained it in 2020.79, and it has no PEM
+  representation a 2014 `dropbearconvert` could read.
+- **`ssh-dss`** — Dropbear supports it, but OpenSSH 10 removed it from the
+  server side, so the server could never accept it.
+
+The key type applies to the **client** key only; the host key stays RSA, which
+is the one type Dropbear 2014 and OpenSSH 10 still have in common.
+
+In password mode no client key is generated, and `--key-type` is ignored with a
+notice.
+
 Passing the password as an argument makes it visible in the host's process
 list; `SSHD_TUNEL_PASSWORD` avoids that:
 
@@ -125,6 +156,7 @@ run <port> [password] [options]
   --listen <patterns>   PermitListen value            (default: *:*)
   --expose <r:h:p>      mapping baked into the
                         bootstrap script              (default: 10022:127.0.0.1:22)
+  --key-type <type>     client key to generate        (default: rsa2048)
   --check-config        render and validate the sshd config, then exit
 ```
 
@@ -234,8 +266,9 @@ sudo tests/run-all.sh
 ```
 
 Compiles Dropbear 2014.63 from source (pinned by SHA-256) and runs the tunnel,
-password, restriction and bootstrap suites against the built chroot. Requires
-`python3` and a C toolchain; the chroot's bind mounts mean the tests need root.
+key-type, password, restriction and bootstrap suites against the built chroot.
+Requires `python3` and a C toolchain; the chroot's bind mounts mean the tests
+need root.
 
 ## Layout
 

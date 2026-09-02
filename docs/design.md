@@ -86,6 +86,32 @@ Instead the account gets a hash of a random string that is discarded
 immediately. Passwords are unmatchable in practice, and password
 authentication is off anyway, but the account stays usable.
 
+### Client key types: RSA and ECDSA only
+
+`--key-type` accepts `rsa2048` (the default), `rsa3072`, `rsa4096`, `ecdsa256`,
+`ecdsa384` and `ecdsa521`. The list is exactly what Dropbear 2014.63 can use,
+established by probing its own `dropbearkey` (`rsa`, `dss`, `ecdsa`) and then
+confirming each candidate through the full chain rather than trusting the help
+text.
+
+`ecdsa256` is the interesting one: 140 bytes in Dropbear's format against
+RSA-2048's 1189, and far cheaper to verify on 2014-era hardware. The default
+stays RSA because ECDSA arrived in Dropbear 2013.56, so a device older than
+that still needs RSA.
+
+Two omissions are deliberate and produce an error, not a fallback:
+
+- **`ed25519`** — absent from Dropbear until 2020.79. It also has no PEM
+  encoding, and `ssh-keygen -m PEM -t ed25519` simply fails, so the manual
+  `dropbearconvert` path on a 2014 device could not work either.
+- **`ssh-dss`** — Dropbear supports it, but OpenSSH 10 dropped it server-side,
+  so the server can never accept such a key. Supporting it would mean pinning
+  an older OpenSSH, which the Alpine-latest decision above already rejected.
+
+The **host** key stays RSA: it is the only algorithm Dropbear 2014 and OpenSSH
+10 still share, now that `ssh-dss` is gone from one side and everything modern
+is missing from the other.
+
 ### `PermitListen *:*`, not `0.0.0.0:*`
 
 `PermitListen` matches the bind address the **client** requested, not the
@@ -167,6 +193,7 @@ taking no arguments and breaks `atomicio.c`; and `linux-headers` on Alpine.
 | `test-tunnel-key.sh` | the printed key converts with the 2014 `dropbearconvert`, the forward comes up, bytes traverse it, the listener is on `0.0.0.0`, and the wrapper unmounts on exit |
 | `test-tunnel-password.sh` | the same over `DROPBEAR_PASSWORD` with an awkward password; keys are refused in password mode |
 | `test-restrictions.sh` | no shell, `-L` carries nothing, `PermitListen` narrowing is enforced, other accounts and passwords are refused, and the permitted forward still works |
+| `test-key-types.sh` | every `--key-type` value converts with the 2014 tool, authenticates and carries data; unsupported types are refused rather than silently downgraded |
 | `test-bootstrap.sh` | the token is required, the served script is valid POSIX shell, running it establishes the tunnel in both modes |
 
 Data actually moving through the forward is the assertion in every tunnel test —
