@@ -1,0 +1,87 @@
+# Template rendered by /run.sh at startup. Placeholders (@NAME@) are replaced
+# with values derived from the command line; the rendered result is written to
+# /etc/ssh/sshd_config.active and never edited by hand.
+#
+# Two goals pull in opposite directions here:
+#   1. talk to a Dropbear client from 2014, which only knows SHA-1 era crypto;
+#   2. give that client nothing except a reverse TCP forward.
+# Legacy algorithms are therefore added with '+' (appended to the modern
+# defaults, so current clients still negotiate current crypto), while every
+# capability other than remote forwarding is switched off explicitly.
+
+Port @PORT@
+Protocol 2
+AddressFamily any
+PidFile /run/sshd.pid
+LogLevel VERBOSE
+
+# --------------------------------------------------------------- host keys
+# RSA only: Dropbear 2014.x knows ssh-rsa and ssh-dss, and ssh-dss no longer
+# exists in OpenSSH >= 10, which leaves ssh-rsa as the single common option.
+HostKey @HOST_KEY@
+
+# ------------------------------------------------- legacy algorithm support
+# Verified present in OpenSSH 10.3p1; build/verify-rootfs.sh fails the build
+# if a future release drops any of them.
+HostKeyAlgorithms +ssh-rsa
+PubkeyAcceptedAlgorithms +ssh-rsa
+KexAlgorithms +diffie-hellman-group14-sha1,diffie-hellman-group1-sha1,diffie-hellman-group-exchange-sha1
+Ciphers +aes128-cbc,aes192-cbc,aes256-cbc,3des-cbc
+MACs +hmac-sha1,hmac-sha1-96,hmac-md5,hmac-md5-96
+RequiredRSASize 2048
+
+# ----------------------------------------------------------- authentication
+# Exactly one method is enabled, decided by whether a password was passed to
+# /run.sh. The other is off, not merely deprioritised.
+PasswordAuthentication @PASSWORD_AUTH@
+PubkeyAuthentication @PUBKEY_AUTH@
+AuthorizedKeysFile /home/tcp/.ssh/authorized_keys
+
+AllowUsers tcp
+PermitRootLogin no
+PermitEmptyPasswords no
+KbdInteractiveAuthentication no
+# UsePAM is deliberately absent: Alpine builds OpenSSH without PAM, so the
+# option does not exist and naming it only produces a startup warning.
+HostbasedAuthentication no
+IgnoreRhosts yes
+MaxAuthTries 3
+LoginGraceTime 30
+StrictModes yes
+
+# ------------------------------------------------------------- forwarding
+# 'remote' permits -R only: -L and -D are refused, so the client cannot reach
+# anything on the server's network through this session.
+AllowTcpForwarding remote
+PermitOpen none
+PermitListen @PERMIT_LISTEN@
+GatewayPorts yes
+AllowStreamLocalForwarding no
+PermitTunnel no
+
+# -------------------------------------------------------- everything else off
+# A tunnel-only client needs none of this. ForceCommand covers the case of an
+# old client that opens a session channel out of habit: it prints a notice and
+# sleeps, keeping the connection (and therefore the tunnel) alive without
+# handing out a shell.
+ForceCommand /usr/local/bin/tunnel-only
+PermitTTY no
+X11Forwarding no
+AllowAgentForwarding no
+PermitUserRC no
+PermitUserEnvironment no
+PrintMotd no
+Banner none
+Subsystem sftp /bin/false
+Compression no
+MaxSessions 2
+MaxStartups 10:30:60
+
+# ------------------------------------------------------------------ liveness
+# Keeps NAT and stateful firewalls between the device and the server from
+# silently dropping an idle tunnel.
+TCPKeepAlive yes
+ClientAliveInterval 30
+ClientAliveCountMax 4
+
+UseDNS no

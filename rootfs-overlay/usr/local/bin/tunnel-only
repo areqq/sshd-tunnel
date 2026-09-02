@@ -1,0 +1,10 @@
+#!/bin/sh
+# ForceCommand target for the 'tcp' account.
+#
+# A Dropbear client run with -N never opens a session channel, so this is not
+# normally reached. Older clients (and users typing the command by hand) do
+# open one; when that happens the session must neither hand out a shell nor
+# terminate, because some clients exit as soon as their session channel closes
+# and would tear down the reverse forward with it.
+echo 'sshd-tunel: this account only carries reverse TCP forwards (-R). No shell.' >&2
+exec sleep 2147483647

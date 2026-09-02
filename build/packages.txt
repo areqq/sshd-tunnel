@@ -1,0 +1,19 @@
+# Packages installed into the chroot rootfs, one per line.
+# Comments and blank lines are ignored.
+
+# Base layout: /etc/passwd, /etc/group, directory skeleton.
+alpine-baselayout
+
+# Shell and core utilities (sh, sed, awk, od, tr, adduser, chpasswd, ip, nc).
+busybox
+
+# Provides the `httpd` applet used to serve the bootstrap script.
+busybox-extras
+
+# The SSH server itself, plus ssh-keygen for host/client key generation.
+openssh-server
+openssh-keygen
+
+# Converts OpenSSH PEM keys into Dropbear's native key format, so ancient
+# dbclient builds can use the generated key without dropbearconvert locally.
+dropbear-convert

@@ -1,0 +1,127 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DROPBEAR_VERSION: '2014.63'
+
+jobs:
+  build:
+    name: build chroot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The build itself must run on Alpine as root, but the job cannot use
+      # `container: alpine` because actions/checkout ships a glibc-linked
+      # Node runtime that will not execute on musl. Docker on the runner gives
+      # the same Alpine environment without that constraint.
+      - name: Build and verify the rootfs
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = 'tag' ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="${GITHUB_REF_NAME}-$(git rev-parse --short HEAD)"
+          fi
+          echo "building version $VERSION"
+          CONTAINER_ENGINE=docker VERSION="$VERSION" build/build.sh
+
+      - name: Take ownership of the build output
+        run: sudo chown -R "$(id -u):$(id -g)" dist
+
+      - name: Show what was built
+        run: |
+          cat dist/stage/sshd-tunel/VERSION
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-tarball
+          path: |
+            dist/sshd-tunel-x86_64.tgz
+            dist/sshd-tunel-x86_64.tgz.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  test:
+    name: test against a Dropbear 2014 client
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-tarball
+          path: dist
+
+      - name: Install build dependencies for the 2014 client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential bzip2 >/dev/null
+
+      # Keyed on the pinned source version, so the client is compiled once and
+      # reused until that pin changes.
+      - name: Cache the Dropbear 2014 client
+        uses: actions/cache@v4
+        with:
+          path: dist/dropbear-${{ env.DROPBEAR_VERSION }}
+          key: dropbear-${{ env.DROPBEAR_VERSION }}-${{ runner.os }}
+
+      # Unpacked as root so the tarball's ownership survives: sshd enforces
+      # StrictModes on /var/empty and on the path to authorized_keys.
+      - name: Unpack the release
+        run: |
+          sudo mkdir -p /opt/sshd-tunel-test
+          sudo tar xzf dist/sshd-tunel-x86_64.tgz -C /opt/sshd-tunel-test
+          sudo /opt/sshd-tunel-test/sshd-tunel/rootfs/bin/busybox --help >/dev/null
+          ls -l /opt/sshd-tunel-test/sshd-tunel
+
+      - name: Verify the published checksum
+        run: |
+          cd dist
+          sha256sum -c sshd-tunel-x86_64.tgz.sha256
+
+      - name: Run the test suite
+        run: sudo -E tests/run-all.sh /opt/sshd-tunel-test/sshd-tunel
+
+      - name: Server logs on failure
+        if: failure()
+        run: |
+          sudo dmesg | tail -30 || true
+          sudo find /tmp -name 'server.log' -newermt '-30 minutes' \
+            -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; 2>/dev/null || true
+
+  release:
+    name: publish release
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-tarball
+          path: dist
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/sshd-tunel-x86_64.tgz \
+            dist/sshd-tunel-x86_64.tgz.sha256 \
+            install.sh
