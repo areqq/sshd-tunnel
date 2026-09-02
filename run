@@ -1,0 +1,139 @@
+#!/bin/sh
+# Host-side wrapper: prepares the chroot and hands over to /run.sh inside it.
+#
+#   ./run <port> [password] [options]
+#
+# Everything after the script name is passed through unchanged; see
+# `./run --help` for the option list.
+#
+# Two things must exist inside the chroot before sshd can start: a mounted
+# /proc, and real device nodes for /dev/null and friends (OpenSSL reads
+# /dev/urandom). Rather than shipping device nodes in the tarball — which
+# would make unpacking as a normal user impossible — the real devices are
+# bind-mounted onto placeholder files here, and unmounted on exit.
+#
+# Environment:
+#   SSHD_TUNEL_PASSWORD     password, keeping it out of the process list
+#   SSHD_TUNEL_SKIP_MOUNTS  set to 1 when /proc and /dev are already prepared
+#   SSHD_TUNEL_IP           override the advertised server addresses
+
+set -eu
+
+PROG='sshd-tunel'
+DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+ROOTFS="$DIR/rootfs"
+DEVICES='null zero full random urandom tty'
+
+log() { printf '%s: %s\n' "$PROG" "$*" >&2; }
+die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
+
+case "${1:-}" in
+	-h|--help)
+		[ -x "$ROOTFS/run.sh" ] && exec chroot "$ROOTFS" /run.sh --help
+		printf 'Usage: %s <port> [password] [options]\n' "$0"
+		exit 0
+		;;
+esac
+
+[ -d "$ROOTFS" ] || die "no rootfs at $ROOTFS — run this from an unpacked release"
+[ -x "$ROOTFS/run.sh" ] || die "$ROOTFS/run.sh is missing or not executable"
+
+# ---------------------------------------------------------------- privileges
+if [ "$(id -u)" -ne 0 ]; then
+	if command -v sudo >/dev/null 2>&1; then
+		log 're-executing under sudo (chroot needs root)'
+		exec sudo -E "$0" "$@"
+	fi
+	die 'must run as root: chroot and bind mounts require it'
+fi
+
+# -------------------------------------------------------------------- mounts
+MOUNTED=''
+
+is_mounted() {
+	# /proc/mounts is authoritative and always present on Linux; mountpoint(1)
+	# is not installed everywhere.
+	awk -v t="$1" '$2 == t { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null
+}
+
+cleanup() {
+	trap - EXIT INT TERM HUP
+	set +e
+	# The chroot's own /run.sh stops sshd and the bootstrap server from its
+	# trap, but it only gets the chance if it is signalled first; the mounts
+	# stay busy until it is gone.
+	if [ -n "${CHILD:-}" ]; then
+		kill "$CHILD" 2>/dev/null
+		wait "$CHILD" 2>/dev/null
+	fi
+	for target in $MOUNTED; do
+		# A plain umount can fail while the just-signalled sshd still holds a
+		# reference, so retry briefly before resorting to a lazy detach, which
+		# leaves the mount visible until the last reference goes away.
+		attempt=0
+		while [ "$attempt" -lt 3 ]; do
+			umount "$target" 2>/dev/null && break
+			attempt=$((attempt + 1))
+			sleep 1
+		done
+		is_mounted "$target" && umount -l "$target" 2>/dev/null
+	done
+}
+
+prepare_mounts() {
+	trap cleanup EXIT INT TERM HUP
+
+	mkdir -p "$ROOTFS/proc" "$ROOTFS/dev"
+
+	# Anything already mounted is adopted rather than skipped: a mount left
+	# behind by an earlier run would otherwise never be cleaned up, and a
+	# leaked bind mount makes the rootfs impossible to delete or rebuild.
+	if is_mounted "$ROOTFS/proc"; then
+		MOUNTED="$ROOTFS/proc $MOUNTED"
+	else
+		mount -t proc proc "$ROOTFS/proc" || die "cannot mount proc on $ROOTFS/proc"
+		MOUNTED="$ROOTFS/proc $MOUNTED"
+	fi
+
+	for dev in $DEVICES; do
+		[ -e "/dev/$dev" ] || continue
+		target="$ROOTFS/dev/$dev"
+		# The placeholder is a plain file; bind mounts need the target to exist.
+		[ -e "$target" ] || : > "$target"
+		if is_mounted "$target"; then
+			MOUNTED="$target $MOUNTED"
+		elif mount --bind "/dev/$dev" "$target"; then
+			MOUNTED="$target $MOUNTED"
+		else
+			die "cannot bind-mount /dev/$dev into the chroot"
+		fi
+	done
+}
+
+if [ "${SSHD_TUNEL_SKIP_MOUNTS:-0}" = '1' ]; then
+	log 'skipping mount setup (SSHD_TUNEL_SKIP_MOUNTS=1)'
+else
+	prepare_mounts
+fi
+
+# ------------------------------------------------------------ server addresses
+if [ -z "${SSHD_TUNEL_IP:-}" ]; then
+	SSHD_TUNEL_IP="$(ip -4 -o addr show scope global 2>/dev/null |
+		awk '{ split($4, a, "/"); printf "%s ", a[1] }')"
+	[ -n "$SSHD_TUNEL_IP" ] || SSHD_TUNEL_IP="$(hostname -I 2>/dev/null || true)"
+fi
+
+# ------------------------------------------------------------------- handover
+# A fixed environment: the chroot has its own filesystem layout, so inheriting
+# the host's PATH would point at directories that do not exist in there.
+env -i \
+	PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
+	HOME='/root' \
+	TERM="${TERM:-dumb}" \
+	SSHD_TUNEL_IP="$SSHD_TUNEL_IP" \
+	SSHD_TUNEL_PASSWORD="${SSHD_TUNEL_PASSWORD:-}" \
+	chroot "$ROOTFS" /run.sh "$@" &
+
+CHILD=$!
+wait "$CHILD" || STATUS=$?
+exit "${STATUS:-0}"
