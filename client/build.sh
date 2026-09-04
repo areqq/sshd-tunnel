@@ -189,10 +189,21 @@ if [ "${WITH_SFTP:-0}" = '1' ]; then
 	# sftp/sftp-server do no asymmetric crypto themselves, so drop OpenSSL/zlib
 	# to stay small and fully static; the cache vars answer what configure
 	# cannot probe by running target binaries under cross-compilation.
+	#
+	# $ACFLAGS (the same per-arch float ABI flags dropbear's own build gets,
+	# e.g. -msoft-float on mips/mipsel) MUST be included here too: without it,
+	# OpenSSH's objects default to the toolchain's hard-float ABI while
+	# dropbear's are soft-float, and progressmeter.c's floating-point ETA/rate
+	# math (real doubles, unlike the integer-only bignum code everywhere else)
+	# then executes hard-float instructions the real CPU doesn't decode the
+	# way a soft-float caller expects. Found the hard way: SIGILL ("Illegal
+	# instruction", exit 132) in the sftp client applet on real MIPS hardware
+	# — qemu-mips-static never caught it, apparently tolerating the ABI
+	# mismatch that real silicon does not.
 	( cd "$OSRC" && ./configure --host="$HOST_TRIPLE" CC="$CC" \
 		--without-openssl --without-zlib --without-pam \
 		--without-selinux --without-kerberos5 --disable-utmp --disable-wtmp \
-		CFLAGS="-Os -ffunction-sections -fdata-sections" \
+		CFLAGS="-Os -ffunction-sections -fdata-sections $ACFLAGS" \
 		LDFLAGS="-static -Wl,--gc-sections" \
 		ac_cv_func_setresuid=yes ac_cv_func_setresgid=yes \
 		>"$OWORK/configure.log" 2>&1 ) || { tail -25 "$OWORK/configure.log" >&2; die 'openssh configure failed'; }
