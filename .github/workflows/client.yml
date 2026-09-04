@@ -58,6 +58,7 @@ jobs:
       # patches id/hk/ak both via patch-cred and via raw sed, under
       # qemu-<arch>-static, and checks a live dbclient login succeeds both times.
       - name: Verify credential slots (patch-cred + raw sed, live login)
+        timeout-minutes: 5
         run: client/verify.sh ${{ matrix.arch }} client/out/dropbear-tunnel-${{ matrix.arch }}.tgz
 
       - uses: actions/upload-artifact@v4
@@ -113,7 +114,12 @@ jobs:
       # subsystem, and `dropbearmulti sftp` routes its session through the
       # packaged dbclient symlink (self-exec, so this also exercises
       # binfmt_misc for the nested dispatch).
+      # A hang here (seen twice: qemu-mipsel-static specifically, under two
+      # unrelated code changes, both proven correct on real hardware — see
+      # TODO.md) is bounded so it fails fast instead of burning CI minutes
+      # for hours.
       - name: Verify SFTP round-trip
+        timeout-minutes: 5
         run: client/verify-sftp.sh ${{ matrix.arch }} client/out/dropbear-tunnel-${{ matrix.arch }}.tgz
 
       - name: Rename artifact so it can't collide with the core build's
