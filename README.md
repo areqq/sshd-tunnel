@@ -1,8 +1,9 @@
 # sshd-tunnel
 
-A self-contained Alpine chroot (about 4 MB packed) holding an OpenSSH server
+A self-contained Alpine chroot (about 6 MB packed) holding an OpenSSH server
 whose only purpose is to accept a **reverse TCP forward** from an old device
-and publish it on every interface of the host.
+and publish it on every interface of the host — plus an OpenVPN mode for when
+one forwarded port is not enough (see [VPN mode](#vpn-mode)).
 
 It talks to a **Dropbear client from 2014** — SHA-1 era key exchange, `ssh-rsa`
 host keys, `hmac-sha1`, CBC ciphers — while giving that client nothing except
@@ -205,6 +206,46 @@ one against the real 2014 client:
 - **no other account** — `AllowUsers tcp`, `PermitRootLogin no`
 - in key mode the authorized key itself carries `restrict,port-forwarding`, so
   it stays useless for anything else even if the config changed
+
+## VPN mode
+
+The reverse-SSH mode forwards one port. When the device has to be reachable as
+a whole — every port, and traffic the server starts — there is a
+point-to-point OpenVPN tunnel instead:
+
+```sh
+sudo ./run --vpn                    # udp/1194, device becomes 10.9.0.2
+sudo ./run --vpn --proto tcp        # for networks that only pass TCP
+```
+
+It prints a one-liner of the same shape as the SSH one. On the device:
+
+```sh
+wget -O- http://<server>:1195/t/<token>/v | sh
+```
+
+That fetches the static key, writes a config into `/tmp`, and connects. The
+device needs its own `openvpn` binary — unlike the SSH side, nothing is
+shipped for it, and the one-liner says so plainly instead of failing quietly.
+
+**Static key, no PKI.** A fresh `--secret` key per start, point-to-point, no
+certificates to manage. It is chosen for reach rather than fashion: the
+routers this is aimed at run OpenVPN 2.4 and 2.5, and `--peer-fingerprint`
+(the modern no-PKI alternative) needs 2.6 on both ends. OpenVPN 2.7 only
+starts such a tunnel with `--allow-deprecated-insecure-static-crypto`, which
+the server adds for itself after probing for it; 2.8 is expected to drop the
+mode, and this will have to be revisited then.
+
+**The device's firewall is the usual reason it looks dead.** The tunnel can be
+fully up — both ends addressed, traffic flowing from the device — while pings
+from the server vanish, because OpenWrt drops input on an interface that
+belongs to no firewall zone. Test from the device first (`ping 10.9.0.1`); if
+that works, the tunnel is fine and only the device's input policy is in the
+way. The banner prints the `uci` incantation to open it.
+
+**`/dev/net/tun` must exist on the host.** `./run --vpn` bind-mounts it into
+the chroot and refuses to start without it (`modprobe tun`). The SSH mode does
+not need it and does not mount it.
 
 ## Operational notes
 

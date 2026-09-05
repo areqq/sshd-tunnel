@@ -17,3 +17,8 @@ openssh-keygen
 # Converts OpenSSH PEM keys into Dropbear's native key format, so ancient
 # dbclient builds can use the generated key without dropbearconvert locally.
 dropbear-convert
+
+# The VPN side (/vpn.sh): a point-to-point static-key tunnel, as an
+# alternative to the reverse SSH forward when the device needs to be reachable
+# as a whole rather than on one port.
+openvpn
