@@ -13,3 +13,4 @@ vpn-client/out/
 vpn-client/toolchain/
 vpn-client/src-cache/
 vpn-client/.build/
+vpn-client/.verify/

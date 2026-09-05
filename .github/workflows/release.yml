@@ -14,16 +14,72 @@ env:
   DROPBEAR_VERSION: '2014.63'
 
 jobs:
+  # The --dsvpn mode hands the device a static binary for its architecture, so
+  # all seven have to be inside the rootfs before it is packaged. They cannot
+  # be built by build-rootfs.sh itself: that runs in an Alpine (musl)
+  # container, and the Bootlin cross toolchains are glibc x86_64 binaries that
+  # will not execute there. Built here instead, in parallel, sharing the
+  # toolchain cache with the vpn-client workflow.
+  vpn-binaries:
+    name: dsvpn ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, i686, armv7, armv5, aarch64, mips, mipsel]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential xz-utils file >/dev/null
+
+      - name: Cache the Bootlin toolchain
+        uses: actions/cache@v4
+        with:
+          path: vpn-client/toolchain
+          key: bootlin-vpn-${{ matrix.arch }}-2025.08-1
+
+      - name: Cache the DSVPN source
+        uses: actions/cache@v4
+        with:
+          path: vpn-client/src-cache
+          key: dsvpn-src-master
+
+      - name: Build
+        run: vpn-client/build.sh ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsvpn-bin-${{ matrix.arch }}
+          path: vpn-client/out/dsvpn-${{ matrix.arch }}.tgz
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     name: build chroot
+    needs: vpn-binaries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dsvpn-bin-*
+          merge-multiple: true
+          path: vpn-client/out
+
+      - name: Show the dsvpn binaries going into the rootfs
+        run: ls -l vpn-client/out/
 
       # The build itself must run on Alpine as root, but the job cannot use
       # `container: alpine` because actions/checkout ships a glibc-linked
       # Node runtime that will not execute on musl. Docker on the runner gives
       # the same Alpine environment without that constraint.
+      #
+      # build-rootfs.sh unpacks vpn-client/out into the rootfs, and
+      # verify-rootfs.sh fails the build if only some architectures are there.
       - name: Build and verify the rootfs
         run: |
           if [ "${GITHUB_REF_TYPE}" = 'tag' ]; then

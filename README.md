@@ -2,8 +2,10 @@
 
 A self-contained Alpine chroot (about 6 MB packed) holding an OpenSSH server
 whose only purpose is to accept a **reverse TCP forward** from an old device
-and publish it on every interface of the host — plus an OpenVPN mode for when
-one forwarded port is not enough (see [VPN mode](#vpn-mode)).
+and publish it on every interface of the host — plus two VPN modes for when
+one forwarded port is not enough (see [VPN mode](#vpn-mode)): OpenVPN, and
+DSVPN for devices that have no VPN software of their own and no way to get
+any.
 
 It talks to a **Dropbear client from 2014** — SHA-1 era key exchange, `ssh-rsa`
 host keys, `hmac-sha1`, CBC ciphers — while giving that client nothing except
@@ -247,6 +249,51 @@ way. The banner prints the `uci` incantation to open it.
 the chroot and refuses to start without it (`modprobe tun`). The SSH mode does
 not need it and does not mount it.
 
+### When the device has no openvpn: `--dsvpn`
+
+The mode above assumes the device can run OpenVPN. Many of these boxes cannot,
+and cannot install it either — no package manager, no space, no internet. For
+those there is a second VPN mode that ships the client along with the key:
+
+```sh
+sudo ./run --dsvpn                  # tcp/11195, device becomes 10.9.1.2
+```
+
+```sh
+wget -O- http://<server>:11196/t/<token>/v | sh
+```
+
+The one-liner detects the architecture, pulls the matching ~100 kB static
+[DSVPN](https://github.com/jedisct1/dsvpn) binary and the key from this server
+over plain HTTP, checks the binary actually runs on that CPU before trusting
+it, and connects. Nothing has to be present on the device but a shell, `wget`
+or `curl`, `ip`, and `/dev/net/tun`. All seven architectures are built into the
+rootfs (about 780 kB in total), because a device that needs this mode is
+generally a device that cannot reach GitHub.
+
+**What it costs, stated plainly.** DSVPN is TCP-only, so this is TCP over TCP,
+which stalls badly on a lossy link where the OpenVPN mode over UDP would not.
+It speaks its own protocol with its own Xoodoo-based crypto rather than TLS,
+and it is a far smaller and less scrutinised codebase than OpenVPN. Use
+`--vpn` when the device already has openvpn; use this when it does not.
+
+**It changes nothing on the device.** Upstream DSVPN is built for "route all
+my traffic through the VPN": it sets sysctls, installs iptables rules, and
+moves the default route into a policy routing table. All of that is patched
+out ([`vpn-client/patches/no-system-changes.patch`](vpn-client/patches/no-system-changes.patch)),
+leaving only the two commands a point-to-point link needs — bring the
+interface up, give it its pair of addresses. So there is nothing to undo
+either: killing the client removes its tun device and that is the whole of it.
+CI asserts this against the built binary's strings, because a patch that
+silently stopped matching upstream would ship a client that rewrites a
+router's routing table.
+
+The same firewall caveat as the OpenVPN mode applies, and looks slightly
+different here: OpenWrt's `fw4` *rejects* rather than drops, so a ping from
+the server comes back as "Destination Port Unreachable" from the device's own
+tunnel address. That is the device's input policy, not a broken tunnel — the
+reject travelled back through it.
+
 ## Operational notes
 
 **Repeated failed logins get throttled.** OpenSSH 10 enables
@@ -300,6 +347,20 @@ Or on an Alpine host, as root:
 ARCH=x86_64 build/build-rootfs.sh
 ```
 
+The `--dsvpn` mode needs the seven client binaries in the rootfs, and they are
+built separately — the rootfs build runs on musl, while the Bootlin cross
+toolchains are glibc binaries that will not execute there:
+
+```sh
+for a in x86_64 i686 armv7 armv5 aarch64 mips mipsel; do vpn-client/build.sh $a; done
+build/build.sh
+```
+
+Skipping that is fine: the build says so and produces a rootfs where every
+mode but `--dsvpn` works. What it will not do is produce a half-populated one
+— `verify-rootfs.sh` fails the build if some architectures are missing, since
+the symptom would otherwise be one particular device getting a 404.
+
 ## Testing
 
 ```sh
@@ -311,6 +372,20 @@ key-type, password, restriction and bootstrap suites against the built chroot.
 Requires `python3` and a C toolchain; the chroot's bind mounts mean the tests
 need root.
 
+The two client packages verify themselves:
+
+```sh
+client/verify.sh mips client/out/dropbear-tunnel-mips.tgz        # credential slots, live login
+client/verify-sftp.sh mips client/out/dropbear-tunnel-mips.tgz   # SFTP round-trip
+sudo vpn-client/verify.sh x86_64 vpn-client/out/dsvpn-x86_64.tgz # real tunnel, two netns
+```
+
+Each runs the foreign-architecture binary under `qemu-<arch>-static`. The
+DSVPN one additionally brings a tunnel up between two network namespaces and
+pings across it, which is what proves the patched-down setup commands are
+still enough — and asserts afterwards that neither namespace gained a policy
+routing rule.
+
 ## Layout
 
 ```
@@ -318,14 +393,25 @@ build/build.sh              run the build in a container
 build/build-rootfs.sh       bootstrap the rootfs with apk.static, package it
 build/verify-rootfs.sh      build-time gate: legacy algorithms and restrictions
 build/packages.txt          what goes into the chroot
-rootfs-overlay/run.sh       entrypoint inside the chroot
+rootfs-overlay/run.sh       entrypoint inside the chroot: reverse SSH
+rootfs-overlay/vpn.sh       entrypoint: OpenVPN mode
+rootfs-overlay/dsvpn.sh     entrypoint: DSVPN mode, serves the client too
 rootfs-overlay/etc/ssh/sshd_config.tmpl
 rootfs-overlay/usr/local/bin/tunnel-only
-rootfs-overlay/usr/local/share/sshd-tunnel/bootstrap-body.sh
+rootfs-overlay/usr/local/share/sshd-tunnel/*-body.sh
+                            the scripts served to the device, one per mode
 run                         host wrapper: mounts, chroot, cleanup
 install.sh                  download a release and start it
+client/                     the static multi-arch Dropbear for the device
+vpn-client/                 the static multi-arch DSVPN for the device
 tests/                      the suite, including the Dropbear 2014 builder
 ```
+
+`client/` and `vpn-client/` build and release on their own, under the
+`client-v*` and `vpn-client-v*` tag prefixes, so a server release never drags
+them along and vice versa. The server build does pull the seven DSVPN binaries
+in, though: they have to be inside the rootfs for `--dsvpn` to have anything
+to hand the device.
 
 `/run.sh` rather than `/run` inside the chroot, because `/run` has to stay a
 directory — OpenSSH keeps its pid file there. The host-side wrapper is `run`,

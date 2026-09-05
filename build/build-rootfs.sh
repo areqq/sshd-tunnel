@@ -93,8 +93,42 @@ chmod 600 "$ROOTFS/home/tcp/.ssh/authorized_keys"
 # ------------------------------------------------------------------ overlay
 log 'applying rootfs-overlay'
 cp -a "$REPO_DIR/rootfs-overlay/." "$ROOTFS/"
-chmod 755 "$ROOTFS/run.sh" "$ROOTFS/vpn.sh" "$ROOTFS/usr/local/bin/tunnel-only"
+chmod 755 "$ROOTFS/run.sh" "$ROOTFS/vpn.sh" "$ROOTFS/dsvpn.sh" "$ROOTFS/usr/local/bin/tunnel-only"
 chmod 644 "$ROOTFS/etc/ssh/sshd_config.tmpl"
+
+# ------------------------------------------------------------ dsvpn binaries
+# The --dsvpn mode hands the device a static binary for its architecture,
+# because the whole point of that mode is a device with no VPN software and
+# often no way to install any. So all seven have to be inside the rootfs: the
+# device is assumed to reach nothing but this server, over plain HTTP.
+#
+# They are not built here. This script runs in an Alpine (musl) container,
+# while the Bootlin cross toolchains are glibc x86_64 binaries that will not
+# execute in it — so vpn-client/build.sh runs on the host first, and this only
+# unpacks what it produced. A build without them still works; --dsvpn is the
+# only mode that stops being available, and it says so at startup.
+DSVPN_OUT="${DSVPN_OUT:-$REPO_DIR/vpn-client/out}"
+DSVPN_DEST="$ROOTFS/usr/local/share/sshd-tunnel/dsvpn"
+DSVPN_COUNT=0
+if [ -d "$DSVPN_OUT" ]; then
+	mkdir -p "$DSVPN_DEST"
+	for dsv_arch in x86_64 i686 armv7 armv5 aarch64 mips mipsel; do
+		dsv_tgz="$DSVPN_OUT/dsvpn-$dsv_arch.tgz"
+		[ -f "$dsv_tgz" ] || continue
+		tar xzf "$dsv_tgz" -C "$DSVPN_DEST" --strip-components=1 "dsvpn-$dsv_arch/dsvpn" \
+			|| die "cannot unpack $dsv_tgz"
+		mv "$DSVPN_DEST/dsvpn" "$DSVPN_DEST/dsvpn-$dsv_arch"
+		chmod 755 "$DSVPN_DEST/dsvpn-$dsv_arch"
+		DSVPN_COUNT=$((DSVPN_COUNT + 1))
+	done
+fi
+if [ "$DSVPN_COUNT" -eq 0 ]; then
+	log "no dsvpn binaries in $DSVPN_OUT — the --dsvpn mode will be unavailable"
+	log '  (build them first: for a in x86_64 i686 armv7 armv5 aarch64 mips mipsel; do vpn-client/build.sh $a; done)'
+	rm -rf "$DSVPN_DEST"
+else
+	log "embedded $DSVPN_COUNT dsvpn binaries ($(du -sh "$DSVPN_DEST" | cut -f1))"
+fi
 
 # --------------------------------------------------------- runtime directories
 # /var/empty is sshd's privilege separation directory and must be owned by root

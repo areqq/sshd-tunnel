@@ -34,6 +34,7 @@ head_ 'required files'
 for f in \
 	run.sh \
 	vpn.sh \
+	dsvpn.sh \
 	usr/sbin/sshd \
 	usr/sbin/openvpn \
 	usr/bin/ssh-keygen \
@@ -43,14 +44,46 @@ for f in \
 	usr/local/bin/tunnel-only \
 	usr/local/share/sshd-tunnel/bootstrap-body.sh \
 	usr/local/share/sshd-tunnel/vpn-body.sh \
+	usr/local/share/sshd-tunnel/dsvpn-body.sh \
 	etc/ssh/sshd_config.tmpl
 do
 	if [ -e "$ROOTFS/$f" ]; then ok "$f"; else bad "missing $f"; fi
 done
 
-for f in run.sh vpn.sh usr/local/bin/tunnel-only; do
+for f in run.sh vpn.sh dsvpn.sh usr/local/bin/tunnel-only; do
 	[ -x "$ROOTFS/$f" ] || bad "$f is not executable"
 done
+
+# --------------------------------------------------------------- dsvpn binaries
+# Absent is allowed: a rootfs built without vpn-client/out simply has no
+# --dsvpn mode. Half-present is not — a device whose architecture is missing
+# would fetch a 404 and be told the server was misbuilt, which is exactly the
+# failure this catches at build time instead.
+head_ 'dsvpn binaries for the --dsvpn mode'
+DSVPN_DIR="$ROOTFS/usr/local/share/sshd-tunnel/dsvpn"
+if [ ! -d "$DSVPN_DIR" ]; then
+	ok 'not embedded (--dsvpn will be unavailable, which /dsvpn.sh reports)'
+else
+	for dsv_arch in x86_64 i686 armv7 armv5 aarch64 mips mipsel; do
+		dsv_bin="$DSVPN_DIR/dsvpn-$dsv_arch"
+		if [ ! -f "$dsv_bin" ]; then
+			bad "missing dsvpn-$dsv_arch"
+		elif [ ! -x "$dsv_bin" ]; then
+			bad "dsvpn-$dsv_arch is not executable"
+		else
+			ok "dsvpn-$dsv_arch ($(wc -c <"$dsv_bin") bytes)"
+		fi
+	done
+	# The server runs one of these itself, so at least the native one has to be
+	# a working binary and not, say, a truncated download.
+	if "$DSVPN_DIR/dsvpn-$(uname -m | sed -e 's/^amd64$/x86_64/' -e 's/^arm64$/aarch64/')" 2>&1 |
+		grep -q DSVPN
+	then
+		ok 'the native dsvpn binary runs'
+	else
+		bad 'the native dsvpn binary does not run'
+	fi
+fi
 
 head_ 'tunnel account'
 grep -q '^tcp:' "$ROOTFS/etc/passwd" && ok 'tcp in /etc/passwd' || bad 'tcp missing from /etc/passwd'
