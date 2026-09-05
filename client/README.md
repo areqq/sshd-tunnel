@@ -12,6 +12,42 @@ The distinguishing feature: the credentials are embedded in the binary inside
 fresh key on the server — with `sed` or the bundled `patch-cred` — **without
 recompiling** and without a toolchain on the device.
 
+## Install on a device
+
+One line on the device itself — it works out which architecture it is,
+downloads the matching release into `/tmp`, checks the published SHA-256, and
+proves the binary actually runs on that CPU before saying it is done:
+
+```sh
+wget -qO- https://raw.githubusercontent.com/areqq/sshd-tunnel/main/client/install.sh | sh
+```
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/areqq/sshd-tunnel/main/client/install.sh | sh
+```
+
+Nothing is written outside `/tmp/dropbear-tunnel`, nothing is started, and no
+configuration on the device is touched. Then open the tunnel:
+
+```sh
+/tmp/dropbear-tunnel/bootstrap.sh you@your-server -R 22022:127.0.0.1:2222
+```
+
+The installer is POSIX `sh` for busybox on genuinely old and minimal devices —
+no `mktemp`, no `command` builtin, no `od`/`cmp`/`find -maxdepth`, no bashisms.
+`uname -m` reports plain `mips` on both big- and little-endian routers, so the
+endianness is read out of an ELF header on the device to pick between the
+`mips` and `mipsel` builds. Tested on OpenWrt (mips and mipsel) and
+ASUSWRT-Merlin (armv7) hardware.
+
+| variable | default | |
+|---|---|---|
+| `DBT_DIR` | `/tmp/dropbear-tunnel` | install directory |
+| `DBT_ARCH` | autodetected | override the detection |
+| `DBT_VERSION` | latest `client-v*` | pin a release tag |
+| `DBT_SFTP` | unset | set to `1` for the SFTP-enabled build |
+| `DBT_REPO` | `areqq/sshd-tunnel` | source repo |
+
 ## Architectures
 
 Built by CI into one `.tgz` each. All static musl (Bootlin toolchains), no

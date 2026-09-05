@@ -157,7 +157,7 @@ jobs:
         run: |
           mkdir -p release
           find artifacts -type f \( -name '*.tgz' -o -name '*.sha256' \) -exec cp {} release/ \;
-          cp client/patch-cred client/bootstrap.sh release/
+          cp client/patch-cred client/bootstrap.sh client/install.sh release/
           ls -l release/
 
       - name: Create the release
