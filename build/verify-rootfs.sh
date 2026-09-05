@@ -33,19 +33,22 @@ head_() { printf '\n-- %s\n' "$*"; }
 head_ 'required files'
 for f in \
 	run.sh \
+	vpn.sh \
 	usr/sbin/sshd \
+	usr/sbin/openvpn \
 	usr/bin/ssh-keygen \
 	usr/bin/dropbearconvert \
 	bin/busybox-extras \
 	bin/sh \
 	usr/local/bin/tunnel-only \
 	usr/local/share/sshd-tunnel/bootstrap-body.sh \
+	usr/local/share/sshd-tunnel/vpn-body.sh \
 	etc/ssh/sshd_config.tmpl
 do
 	if [ -e "$ROOTFS/$f" ]; then ok "$f"; else bad "missing $f"; fi
 done
 
-for f in run.sh usr/local/bin/tunnel-only; do
+for f in run.sh vpn.sh usr/local/bin/tunnel-only; do
 	[ -x "$ROOTFS/$f" ] || bad "$f is not executable"
 done
 
@@ -71,7 +74,7 @@ else
 fi
 
 head_ 'device placeholders'
-for dev in null zero full random urandom tty; do
+for dev in null zero full random urandom tty net/tun; do
 	if [ -f "$ROOTFS/dev/$dev" ]; then
 		ok "dev/$dev is a placeholder file"
 	elif [ -e "$ROOTFS/dev/$dev" ]; then

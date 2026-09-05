@@ -93,7 +93,7 @@ chmod 600 "$ROOTFS/home/tcp/.ssh/authorized_keys"
 # ------------------------------------------------------------------ overlay
 log 'applying rootfs-overlay'
 cp -a "$REPO_DIR/rootfs-overlay/." "$ROOTFS/"
-chmod 755 "$ROOTFS/run.sh" "$ROOTFS/usr/local/bin/tunnel-only"
+chmod 755 "$ROOTFS/run.sh" "$ROOTFS/vpn.sh" "$ROOTFS/usr/local/bin/tunnel-only"
 chmod 644 "$ROOTFS/etc/ssh/sshd_config.tmpl"
 
 # --------------------------------------------------------- runtime directories
@@ -121,6 +121,10 @@ chmod 755 "$ROOTFS/dev"
 for dev in null zero full random urandom tty; do
 	: > "$ROOTFS/dev/$dev"
 done
+# /dev/net/tun for the OpenVPN mode; same placeholder trick, one level deeper.
+mkdir -p "$ROOTFS/dev/net"
+chmod 755 "$ROOTFS/dev/net"
+: > "$ROOTFS/dev/net/tun"
 
 # ---------------------------------------------------------------------- strip
 log 'stripping build leftovers'

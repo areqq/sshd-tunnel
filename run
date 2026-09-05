@@ -24,6 +24,12 @@ DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 ROOTFS="$DIR/rootfs"
 DEVICES='null zero full random urandom tty'
 
+# Which entrypoint inside the chroot to hand over to. --vpn swaps the
+# reverse-SSH server for the OpenVPN one; /dev/net/tun is only needed then,
+# and bind-mounting it unconditionally would fail on a host without the tun
+# module loaded.
+ENTRY='/run.sh'
+
 log() { printf '%s: %s\n' "$PROG" "$*" >&2; }
 die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
 
@@ -36,12 +42,28 @@ case "${1:-}" in
 			exec sh "$ROOTFS/run.sh" --help
 		fi
 		printf 'Usage: %s <port> [password] [options]\n' "$0"
+		printf '       %s --vpn [options]\n' "$0"
 		exit 0
+		;;
+	--vpn)
+		shift
+		ENTRY='/vpn.sh'
+		DEVICES="$DEVICES net/tun"
+		case "${1:-}" in
+			-h|--help)
+				if [ -f "$ROOTFS/vpn.sh" ]; then
+					exec sh "$ROOTFS/vpn.sh" --help
+				fi
+				printf 'Usage: %s --vpn [options]\n' "$0"
+				exit 0
+				;;
+		esac
+		[ -e /dev/net/tun ] || die 'no /dev/net/tun on this host — load the tun module (modprobe tun)'
 		;;
 esac
 
 [ -d "$ROOTFS" ] || die "no rootfs at $ROOTFS — run this from an unpacked release"
-[ -x "$ROOTFS/run.sh" ] || die "$ROOTFS/run.sh is missing or not executable"
+[ -x "$ROOTFS$ENTRY" ] || die "$ROOTFS$ENTRY is missing or not executable"
 
 # ---------------------------------------------------------------- privileges
 if [ "$(id -u)" -ne 0 ]; then
@@ -103,7 +125,9 @@ prepare_mounts() {
 	for dev in $DEVICES; do
 		[ -e "/dev/$dev" ] || continue
 		target="$ROOTFS/dev/$dev"
-		# The placeholder is a plain file; bind mounts need the target to exist.
+		# The placeholder is a plain file; bind mounts need the target to
+		# exist, and net/tun needs its directory to exist first.
+		mkdir -p "$(dirname -- "$target")"
 		[ -e "$target" ] || : > "$target"
 		if is_mounted "$target"; then
 			MOUNTED="$target $MOUNTED"
@@ -137,7 +161,7 @@ env -i \
 	TERM="${TERM:-dumb}" \
 	SSHD_TUNNEL_IP="$SSHD_TUNNEL_IP" \
 	SSHD_TUNNEL_PASSWORD="${SSHD_TUNNEL_PASSWORD:-}" \
-	chroot "$ROOTFS" /run.sh "$@" &
+	chroot "$ROOTFS" "$ENTRY" "$@" &
 
 CHILD=$!
 wait "$CHILD" || STATUS=$?
