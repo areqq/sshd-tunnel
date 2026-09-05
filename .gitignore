@@ -7,3 +7,9 @@ client/toolchain/
 client/src-cache/
 client/.build/
 client/*.tar.bz2
+
+# vpn-client/ build artifacts — same deal
+vpn-client/out/
+vpn-client/toolchain/
+vpn-client/src-cache/
+vpn-client/.build/

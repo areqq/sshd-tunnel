@@ -1,0 +1,128 @@
+# Strip everything DSVPN does to the system behind the operator's back, on
+# both the server and the client side.
+#
+# Upstream is built for "route all my traffic through the VPN": the client
+# sets a congestion-control sysctl, installs an iptables rule and hijacks the
+# default route into a policy routing table; the server turns on ip_forward
+# and installs NAT/MASQUERADE plus FORWARD rules. That is the right default
+# for its own use case and the wrong one here — this project wants the device
+# reachable, not its traffic redirected, exactly like the reverse-SSH and
+# OpenVPN modes.
+#
+# It is also a portability problem, and a fatal one: any command in these
+# lists that fails aborts dsvpn (vpn.c bails on the first failure). Neither
+# end can rely on them —
+#   - the server runs in a chroot that has no iptables at all,
+#   - `sysctl ...=bbr` needs kernel >= 4.9 plus the module, and one router
+#     here runs 4.1,
+#   - `iptables -t raw ... -m addrtype` needs tables and matches that minimal
+#     OpenWrt/ASUSWRT builds often leave out,
+#   - `ip -6 addr add` fails outright where IPv6 is disabled.
+#
+# What is left is the irreducible minimum for a point-to-point tunnel: bring
+# the interface up and give it its pair of addresses. Nothing else on either
+# machine is touched, so there is also nothing to unset on exit.
+#
+# The vpn.c hunk follows from the os.c one. Once the Linux command lists no
+# longer mention $EXT_GW_IP or $EXT_IF_NAME, refusing to start because neither
+# could be detected is a check with nothing left behind it — and it does fire
+# in practice, since both are read out of `ip route show default`, which
+# prints nothing in a chroot or on a host whose only route is the tunnel's.
+# The check is kept for the BSD/macOS branches, where those two values are
+# still substituted into real commands.
+--- a/src/os.c
++++ b/src/os.c
+@@ -445,26 +445,10 @@
+     if (is_server) {
+ #ifdef __linux__
+         static const char *set_cmds
+-            []   = { "sysctl net.ipv4.ip_forward=1",
+-                     "ip addr add $LOCAL_TUN_IP peer $REMOTE_TUN_IP dev $IF_NAME",
+-                     "ip -6 addr add $LOCAL_TUN_IP6 peer $REMOTE_TUN_IP6/96 dev $IF_NAME",
++            []   = { "ip addr add $LOCAL_TUN_IP peer $REMOTE_TUN_IP dev $IF_NAME",
+                      "ip link set dev $IF_NAME up",
+-                     "iptables -t raw -I PREROUTING ! -i $IF_NAME -d $LOCAL_TUN_IP -m addrtype ! "
+-                       "--src-type LOCAL -j DROP",
+-                     "iptables -t nat -A POSTROUTING -o $EXT_IF_NAME -s $REMOTE_TUN_IP -j MASQUERADE",
+-                     "iptables -t filter -A FORWARD -i $EXT_IF_NAME -o $IF_NAME -m state --state "
+-                       "RELATED,ESTABLISHED -j ACCEPT",
+-                     "iptables -t filter -A FORWARD -i $IF_NAME -o $EXT_IF_NAME -j ACCEPT",
+                      NULL },
+-   *unset_cmds[] = {
+-       "iptables -t nat -D POSTROUTING -o $EXT_IF_NAME -s $REMOTE_TUN_IP -j MASQUERADE",
+-       "iptables -t filter -D FORWARD -i $EXT_IF_NAME -o $IF_NAME -m state --state "
+-       "RELATED,ESTABLISHED -j ACCEPT",
+-       "iptables -t filter -D FORWARD -i $IF_NAME -o $EXT_IF_NAME -j ACCEPT",
+-       "iptables -t raw -D PREROUTING ! -i $IF_NAME -d $LOCAL_TUN_IP -m addrtype ! "
+-       "--src-type LOCAL -j DROP",
+-       NULL
+-   };
++   *unset_cmds[] = { NULL };
+ #elif defined(__APPLE__) || defined(__OpenBSD__) || defined(__FreeBSD__) || \
+     defined(__DragonFly__) || defined(__NetBSD__)
+         static const char *set_cmds
+@@ -503,32 +487,10 @@
+    };
+ #elif defined(__linux__)
+         static const char *set_cmds
+-            [] = { "sysctl net.ipv4.tcp_congestion_control=bbr",
+-                   "ip link set dev $IF_NAME up",
+-                   "iptables -t raw -I PREROUTING ! -i $IF_NAME -d $LOCAL_TUN_IP -m addrtype ! "
+-                   "--src-type LOCAL -j DROP",
++            [] = { "ip link set dev $IF_NAME up",
+                    "ip addr add $LOCAL_TUN_IP peer $REMOTE_TUN_IP dev $IF_NAME",
+-                   "ip -6 addr add $LOCAL_TUN_IP6 peer $REMOTE_TUN_IP6/96 dev $IF_NAME",
+-#ifndef NO_DEFAULT_ROUTES
+-                   "ip route add default dev $IF_NAME table 42069",
+-                   "ip -6 route add default dev $IF_NAME table 42069",
+-                   "ip rule add not fwmark 42069 table 42069",
+-                   "ip -6 rule add not fwmark 42069 table 42069",
+-                   "ip rule add table main suppress_prefixlength 0",
+-                   "ip -6 rule add table main suppress_prefixlength 0",
+-#endif
+                    NULL },
+-   *unset_cmds[] = {
+-#ifndef NO_DEFAULT_ROUTES
+-       "ip rule delete table 42069",
+-       "ip -6 rule delete table 42069",
+-       "ip rule delete table main suppress_prefixlength 0",
+-       "ip -6 rule delete table main suppress_prefixlength 0",
+-#endif
+-       "iptables -t raw -D PREROUTING ! -i $IF_NAME -d $LOCAL_TUN_IP -m addrtype ! "
+-       "--src-type LOCAL -j DROP",
+-       NULL
+-   };
++   *unset_cmds[] = { NULL };
+ #else
+         static const char *const *set_cmds = NULL, *const *unset_cmds = NULL;
+ #endif
+--- a/src/vpn.c
++++ b/src/vpn.c
+@@ -610,14 +610,26 @@
+     context.wanted_ext_gw_ip = (argc <= 8 || strcmp(argv[8], "auto") == 0) ? NULL : argv[8];
+     ext_gw_ip = context.wanted_ext_gw_ip ? context.wanted_ext_gw_ip : get_default_gw_ip();
+     snprintf(context.ext_gw_ip, sizeof context.ext_gw_ip, "%s", ext_gw_ip == NULL ? "" : ext_gw_ip);
++    context.ext_if_name = get_default_ext_if_name();
++#ifdef __linux__
++    /* The Linux command lists in this build reference neither the gateway nor
++       the external interface, so failing to detect them is not a reason to
++       refuse to start -- and detection does fail on a host with no default
++       route, which a chroot or a device on a point-to-point link may well be.
++       Keep the name a string rather than NULL: it is still substituted. */
++    if (context.ext_if_name == NULL) {
++        context.ext_if_name = "";
++    }
++#else
+     if (ext_gw_ip == NULL && !context.is_server) {
+         fprintf(stderr, "Unable to automatically determine the gateway IP\n");
+         return 1;
+     }
+-    if ((context.ext_if_name = get_default_ext_if_name()) == NULL && context.is_server) {
++    if (context.ext_if_name == NULL && context.is_server) {
+         fprintf(stderr, "Unable to automatically determine the external interface\n");
+         return 1;
+     }
++#endif
+     get_tun6_addresses(&context);
+     context.tun_fd = tun_create(context.if_name, context.wanted_if_name);
+     if (context.tun_fd == -1) {
