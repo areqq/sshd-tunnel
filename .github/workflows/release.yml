@@ -45,7 +45,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vpn-client/src-cache
-          key: dsvpn-src-master
+          key: dsvpn-src-4a498b2dcb842e892c4060233710478cd30ecbf8
 
       - name: Build
         run: vpn-client/build.sh ${{ matrix.arch }}

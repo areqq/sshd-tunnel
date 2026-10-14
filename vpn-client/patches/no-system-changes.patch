@@ -30,24 +30,29 @@
 # prints nothing in a chroot or on a host whose only route is the tunnel's.
 # The check is kept for the BSD/macOS branches, where those two values are
 # still substituted into real commands.
+#
+# Generated against upstream commit 4a498b2dcb842e892c4060233710478cd30ecbf8
+# (2026-09-21). The default DSVPN_REF in build.sh is pinned to it, because an
+# upstream reformat already broke this patch once without any functional
+# change.
 --- a/src/os.c
 +++ b/src/os.c
 @@ -445,26 +445,10 @@
      if (is_server) {
  #ifdef __linux__
          static const char *set_cmds
--            []   = { "sysctl net.ipv4.ip_forward=1",
--                     "ip addr add $LOCAL_TUN_IP peer $REMOTE_TUN_IP dev $IF_NAME",
--                     "ip -6 addr add $LOCAL_TUN_IP6 peer $REMOTE_TUN_IP6/96 dev $IF_NAME",
-+            []   = { "ip addr add $LOCAL_TUN_IP peer $REMOTE_TUN_IP dev $IF_NAME",
-                      "ip link set dev $IF_NAME up",
--                     "iptables -t raw -I PREROUTING ! -i $IF_NAME -d $LOCAL_TUN_IP -m addrtype ! "
--                       "--src-type LOCAL -j DROP",
--                     "iptables -t nat -A POSTROUTING -o $EXT_IF_NAME -s $REMOTE_TUN_IP -j MASQUERADE",
--                     "iptables -t filter -A FORWARD -i $EXT_IF_NAME -o $IF_NAME -m state --state "
--                       "RELATED,ESTABLISHED -j ACCEPT",
--                     "iptables -t filter -A FORWARD -i $IF_NAME -o $EXT_IF_NAME -j ACCEPT",
-                      NULL },
+-            [] = { "sysctl net.ipv4.ip_forward=1",
+-                   "ip addr add $LOCAL_TUN_IP peer $REMOTE_TUN_IP dev $IF_NAME",
+-                   "ip -6 addr add $LOCAL_TUN_IP6 peer $REMOTE_TUN_IP6/96 dev $IF_NAME",
++            [] = { "ip addr add $LOCAL_TUN_IP peer $REMOTE_TUN_IP dev $IF_NAME",
+                    "ip link set dev $IF_NAME up",
+-                   "iptables -t raw -I PREROUTING ! -i $IF_NAME -d $LOCAL_TUN_IP -m addrtype ! "
+-                   "--src-type LOCAL -j DROP",
+-                   "iptables -t nat -A POSTROUTING -o $EXT_IF_NAME -s $REMOTE_TUN_IP -j MASQUERADE",
+-                   "iptables -t filter -A FORWARD -i $EXT_IF_NAME -o $IF_NAME -m state --state "
+-                   "RELATED,ESTABLISHED -j ACCEPT",
+-                   "iptables -t filter -A FORWARD -i $IF_NAME -o $EXT_IF_NAME -j ACCEPT",
+                    NULL },
 -   *unset_cmds[] = {
 -       "iptables -t nat -D POSTROUTING -o $EXT_IF_NAME -s $REMOTE_TUN_IP -j MASQUERADE",
 -       "iptables -t filter -D FORWARD -i $EXT_IF_NAME -o $IF_NAME -m state --state "

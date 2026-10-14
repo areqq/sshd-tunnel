@@ -31,7 +31,7 @@ both) and the DSVPN source on demand, applies the patch below, and writes
 for a in x86_64 i686 armv7 armv5 aarch64 mips mipsel; do vpn-client/build.sh $a; done
 ```
 
-Environment: `DSVPN_REF` (default `master`), `TC_VER` (default `2025.08-1`),
+Environment: `DSVPN_REF` (default: the pinned upstream commit the patch is generated against), `TC_VER` (default `2025.08-1`),
 `OUT_DIR`.
 
 ## The patch

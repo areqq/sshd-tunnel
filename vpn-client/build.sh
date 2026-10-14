@@ -15,14 +15,15 @@
 # a clean machine needs only curl, tar, make and a C compiler for the host.
 #
 # Environment:
-#   DSVPN_REF   git ref/tag of the source  (default: master)
+#   DSVPN_REF   git commit/tag/branch of the source (default: a pinned commit;
+#               patches/no-system-changes.patch is generated against it)
 #   TC_VER      Bootlin toolchain release  (default: 2025.08-1)
 #   OUT_DIR     where the tarball is written (default: vpn-client/out)
 
 set -eu
 
 ARCH="${1:?usage: build.sh <x86_64|i686|armv7|armv5|aarch64|mips|mipsel>}"
-DSVPN_REF="${DSVPN_REF:-master}"
+DSVPN_REF="${DSVPN_REF:-4a498b2dcb842e892c4060233710478cd30ecbf8}"
 TC_VER="${TC_VER:-2025.08-1}"
 
 HERE="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
@@ -30,7 +31,8 @@ OUT_DIR="${OUT_DIR:-$HERE/out}"
 WORK="$HERE/.build/$ARCH"
 
 DSVPN_TARBALL="dsvpn-$DSVPN_REF.tar.gz"
-DSVPN_URL="https://github.com/jedisct1/dsvpn/archive/refs/heads/$DSVPN_REF.tar.gz"
+# GitHub serves archive/<ref>.tar.gz for a commit, a tag and a branch alike.
+DSVPN_URL="https://github.com/jedisct1/dsvpn/archive/$DSVPN_REF.tar.gz"
 TC_BASE="https://toolchains.bootlin.com/downloads/releases/toolchains"
 
 log() { printf '==> %s\n' "$*"; }
