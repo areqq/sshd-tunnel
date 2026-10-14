@@ -59,7 +59,8 @@ for test in \
 	tests/test-key-types.sh \
 	tests/test-tunnel-password.sh \
 	tests/test-restrictions.sh \
-	tests/test-bootstrap.sh
+	tests/test-bootstrap.sh \
+	tests/test-serve.sh
 do
 	printf '\n=== %s ===\n' "$test"
 	if "$test"; then

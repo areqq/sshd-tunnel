@@ -8,6 +8,14 @@
 # (password given on the command line) or public-key-only (no password given,
 # in which case a fresh key pair is generated and printed at every start).
 #
+# With --serve the device end is supplied too: the one-liner hands the device
+# a static dropbearmulti for its architecture with three credentials patched
+# in (the identity it dials out with, a host key for its own SSH server, and
+# the public key that server accepts), the device starts that server on its
+# loopback and exposes it through the tunnel, and the operator logs into the
+# device from here with the matching private key. Nothing has to exist on the
+# device beyond a shell and wget or curl.
+#
 # Named /run.sh rather than /run because /run must stay a directory: OpenSSH
 # keeps its pid file there. The host-side wrapper is called 'run', so the
 # user-facing command is still `./run <port>`.
@@ -25,9 +33,17 @@ HOST_KEY='/etc/ssh/ssh_host_rsa_key'
 CONFIG_TMPL='/etc/ssh/sshd_config.tmpl'
 CONFIG='/etc/ssh/sshd_config.active'
 BOOTSTRAP_BODY='/usr/local/share/sshd-tunnel/bootstrap-body.sh'
+SERVE_BODY='/usr/local/share/sshd-tunnel/serve-body.sh'
+DBT_BIN_DIR='/usr/local/share/sshd-tunnel/dropbear'
 WEB_ROOT='/srv/www'
 RUNTIME_DIR='/run/sshd-tunnel'
 CLIENT_KEY="$RUNTIME_DIR/client_key"
+# --serve: the device's identity and host key (Dropbear format, patched into
+# the binary) and the operator's key for logging into the device (OpenSSH
+# format, used from the host).
+ID_KEY="$RUNTIME_DIR/id.db"
+HK_KEY="$RUNTIME_DIR/hk.db"
+DEVICE_KEY="$RUNTIME_DIR/device_key"
 
 PORT=''
 PASSWORD="${SSHD_TUNNEL_PASSWORD:-}"
@@ -35,8 +51,10 @@ HTTP_PORT=''
 HTTP_ENABLED=1
 PERMIT_LISTEN='*:*'
 EXPOSE='10022:127.0.0.1:22'
+EXPOSE_SET=0
 KEY_TYPE='rsa2048'
 CHECK_ONLY=0
+SERVE=0
 
 HTTPD_PID=''
 SSHD_PID=''
@@ -72,6 +90,12 @@ Options:
   --key-type <type>   client key to generate, one of rsa2048, rsa3072,
                       rsa4096, ecdsa256, ecdsa384, ecdsa521
                       (default: rsa2048; ignored in password mode)
+  --serve             also give the device an SSH server: the one-liner
+                      fetches a static Dropbear for its architecture with the
+                      credentials already inside, starts it on the device's
+                      loopback and exposes it through the tunnel, so you can
+                      log into the device from here. Key mode only; the
+                      default --expose becomes 10022:127.0.0.1:2222
   --check-config      render and validate the sshd config, then exit
   -h, --help          this text
 EOF
@@ -98,8 +122,9 @@ while [ $# -gt 0 ]; do
 		--no-http)      HTTP_ENABLED=0 ;;
 		--http)         [ $# -ge 2 ] || die '--http needs a port'; HTTP_PORT="$2"; shift ;;
 		--listen)       [ $# -ge 2 ] || die '--listen needs a value'; PERMIT_LISTEN="$2"; shift ;;
-		--expose)       [ $# -ge 2 ] || die '--expose needs r:h:p'; EXPOSE="$2"; shift ;;
+		--expose)       [ $# -ge 2 ] || die '--expose needs r:h:p'; EXPOSE="$2"; EXPOSE_SET=1; shift ;;
 		--key-type)     [ $# -ge 2 ] || die '--key-type needs a type'; KEY_TYPE="$2"; shift ;;
+		--serve)        SERVE=1 ;;
 		--check-config) CHECK_ONLY=1; HTTP_ENABLED=0 ;;
 		-h|--help)      usage; exit 0 ;;
 		*)              die "unknown option: $1" ;;
@@ -115,6 +140,14 @@ is_port() {
 }
 
 is_port "$PORT" || die "invalid port: $PORT"
+
+if [ "$SERVE" -eq 1 ]; then
+	[ -z "$PASSWORD" ] || die '--serve authenticates with the identity embedded in the device binary; it cannot be combined with a password'
+	[ "$HTTP_ENABLED" -eq 1 ] || die '--serve needs the HTTP server: that is how the device fetches its binary'
+	# The device's SSH server listens on its loopback; 22 would collide with
+	# whatever the device already runs there.
+	[ "$EXPOSE_SET" -eq 1 ] || EXPOSE='10022:127.0.0.1:2222'
+fi
 
 if [ -z "$HTTP_PORT" ]; then
 	HTTP_PORT=$((PORT + 1))
@@ -165,10 +198,11 @@ cleanup() {
 	trap - EXIT INT TERM HUP
 	[ -n "$HTTPD_PID" ] && kill "$HTTPD_PID" 2>/dev/null || true
 	[ -n "$SSHD_PID" ] && kill "$SSHD_PID" 2>/dev/null || true
-	# The private key and the tokenised URL must not outlive the process that
+	# The private keys and the tokenised URL must not outlive the process that
 	# published them.
 	[ -n "$TOKEN" ] && rm -rf "$WEB_ROOT/t/$TOKEN" || true
-	rm -f "$CLIENT_KEY" "$CLIENT_KEY.pub" 2>/dev/null || true
+	rm -f "$CLIENT_KEY" "$CLIENT_KEY.pub" "$ID_KEY" "$ID_KEY.pub" "$HK_KEY" \
+		"$DEVICE_KEY" "$DEVICE_KEY.pub" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------- sanity checks
@@ -238,6 +272,29 @@ fi
 [ "$HAVE_RANDOM" -eq 1 ] || \
 	die '/dev/urandom is not a device node inside the chroot; use the run wrapper, or bind-mount it yourself'
 
+# ----------------------------------------------------------- --serve preflight
+# The device binaries are embedded at build time, from a client release. Their
+# absence is a build without them, not a runtime condition to work around.
+DBM=''
+if [ "$SERVE" -eq 1 ]; then
+	[ -f "$SERVE_BODY" ] || die "missing $SERVE_BODY"
+	[ -x /usr/local/bin/patch-cred ] || die 'missing /usr/local/bin/patch-cred'
+	[ -d "$DBT_BIN_DIR" ] || die "missing $DBT_BIN_DIR — this rootfs was built without the dropbear client binaries (client/fetch-release.sh, then rebuild)"
+	# The keys are generated with the client's own dropbearkey, out of the same
+	# set that is served to devices: one build to trust and one to test.
+	case "$(uname -m)" in
+		x86_64|amd64)      HOST_ARCH='x86_64' ;;
+		i[3456]86)         HOST_ARCH='i686' ;;
+		aarch64|arm64)     HOST_ARCH='aarch64' ;;
+		armv7*|armv8l)     HOST_ARCH='armv7' ;;
+		armv6*|armv5*|arm) HOST_ARCH='armv5' ;;
+		*) die "no dropbear build for this server's architecture: $(uname -m)" ;;
+	esac
+	DBM="$DBT_BIN_DIR/dropbearmulti-$HOST_ARCH"
+	[ -x "$DBM" ] || die "missing $DBM"
+	"$DBM" 2>&1 | grep -q Dropbear || die "$DBM does not run here"
+fi
+
 # -------------------------------------------------------------- host key
 # Persistent on purpose: a Dropbear client that stores host keys would flag a
 # changed fingerprint on every restart otherwise.
@@ -274,21 +331,44 @@ else
 	# effectively while leaving the account usable.
 	printf 'tcp:%s\n' "$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')" | chpasswd -c sha512
 
-	rm -f "$CLIENT_KEY" "$CLIENT_KEY.pub"
-	# PEM rather than the native OpenSSH format: the dropbearconvert shipped
-	# with a 2014 device can only read PEM, which matters for anyone doing the
-	# conversion by hand instead of fetching the pre-converted key.
-	ssh-keygen -q -t "$KEY_ALGO" -b "$KEY_BITS" -m PEM -N '' \
-		-C "$PROG client key" -f "$CLIENT_KEY"
-
 	# 'restrict' turns everything off, then port-forwarding is added back: the
 	# key is useless for anything but the forward, even if sshd_config changed.
 	KEY_OPTS='restrict,port-forwarding'
 	for pattern in $PERMIT_LISTEN; do
 		KEY_OPTS="$KEY_OPTS,permitlisten=\"$pattern\""
 	done
-	printf '%s %s\n' "$KEY_OPTS" "$(cat "$CLIENT_KEY.pub")" > "$AUTHORIZED_KEYS"
-	log "public-key authentication enabled for user tcp (fresh $KEY_TYPE key)"
+
+	rm -f "$CLIENT_KEY" "$CLIENT_KEY.pub" "$ID_KEY" "$ID_KEY.pub" "$HK_KEY" "$DEVICE_KEY" "$DEVICE_KEY.pub"
+	if [ "$SERVE" -eq 1 ]; then
+		# Three keys, none of which ever has to be typed or copied by hand:
+		#   id  the device's identity towards this server — Dropbear's own
+		#       format, generated by the same binary that will use it, and
+		#       patched into that binary rather than fetched as a file;
+		#   hk  the host key the device's SSH server presents, same format;
+		#   dk  the operator's key for logging into the device, OpenSSH
+		#       format because it is used from the host with ssh. Its public
+		#       half is the one line the device's server accepts.
+		"$DBM" dropbearkey -t ed25519 -f "$ID_KEY" >/dev/null 2>&1 || die 'dropbearkey failed to generate the device identity'
+		"$DBM" dropbearkey -y -f "$ID_KEY" 2>/dev/null | grep '^ssh-ed25519 ' > "$ID_KEY.pub"
+		[ -s "$ID_KEY.pub" ] || die 'cannot read the public half of the device identity'
+		printf '%s %s\n' "$KEY_OPTS" "$(cat "$ID_KEY.pub")" > "$AUTHORIZED_KEYS"
+
+		"$DBM" dropbearkey -t ed25519 -f "$HK_KEY" >/dev/null 2>&1 || die 'dropbearkey failed to generate the device host key'
+		DEVICE_HOST_FP="$("$DBM" dropbearkey -y -f "$HK_KEY" 2>/dev/null | sed -n 's/^Fingerprint: //p')"
+
+		ssh-keygen -q -t ed25519 -N '' -C "$PROG device access key" -f "$DEVICE_KEY"
+		chmod 600 "$DEVICE_KEY"
+		[ "$KEY_TYPE" = 'rsa2048' ] || log "--key-type $KEY_TYPE ignored: --serve embeds an ed25519 identity"
+		log 'public-key authentication enabled for user tcp (fresh ed25519 identity, embedded in the device binary)'
+	else
+		# PEM rather than the native OpenSSH format: the dropbearconvert shipped
+		# with a 2014 device can only read PEM, which matters for anyone doing
+		# the conversion by hand instead of fetching the pre-converted key.
+		ssh-keygen -q -t "$KEY_ALGO" -b "$KEY_BITS" -m PEM -N '' \
+			-C "$PROG client key" -f "$CLIENT_KEY"
+		printf '%s %s\n' "$KEY_OPTS" "$(cat "$CLIENT_KEY.pub")" > "$AUTHORIZED_KEYS"
+		log "public-key authentication enabled for user tcp (fresh $KEY_TYPE key)"
+	fi
 fi
 
 chown -R tcp:tcp /home/tcp
@@ -307,7 +387,55 @@ PRIMARY_IP="${PRIMARY_IP% }"
 
 # ---------------------------------------------------------------- HTTP bootstrap
 BOOTSTRAP_URL=''
-if [ "$HTTP_ENABLED" -eq 1 ]; then
+SERVED_ARCHES=''
+if [ "$HTTP_ENABLED" -eq 1 ] && [ "$SERVE" -eq 1 ]; then
+	TOKEN="$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
+	TOKEN_DIR="$WEB_ROOT/t/$TOKEN"
+	rm -rf "$WEB_ROOT/t"
+	mkdir -p "$TOKEN_DIR/bin"
+
+	# One patched copy per architecture. Copied, never hard-linked: the copy
+	# is what gets patched, and a hard link would write the credentials into
+	# the pristine binaries in $DBT_BIN_DIR.
+	for b in "$DBT_BIN_DIR"/dropbearmulti-*; do
+		[ -f "$b" ] || continue
+		name="$(basename "$b")"
+		cp "$b" "$TOKEN_DIR/bin/$name"
+		for slot in id hk ak; do
+			case "$slot" in
+				id) payload="$ID_KEY" ;;
+				hk) payload="$HK_KEY" ;;
+				ak) payload="$DEVICE_KEY.pub" ;;
+			esac
+			/usr/local/bin/patch-cred "$TOKEN_DIR/bin/$name" "$slot" "$payload" >/dev/null \
+				|| die "cannot patch the $slot slot of $name"
+		done
+		chmod 644 "$TOKEN_DIR/bin/$name"
+		SERVED_ARCHES="$SERVED_ARCHES${name#dropbearmulti-} "
+	done
+	[ -n "$SERVED_ARCHES" ] || die "no dropbearmulti-* binaries in $DBT_BIN_DIR"
+
+	{
+		printf '#!/bin/sh\n'
+		printf '# %s --serve bootstrap, generated %s\n' "$PROG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+		printf 'SRV=%s\n'       "$(shquote "$PRIMARY_IP")"
+		printf 'SSH_PORT=%s\n'  "$(shquote "$PORT")"
+		printf 'HTTP_PORT=%s\n' "$(shquote "$HTTP_PORT")"
+		printf 'TOKEN=%s\n'     "$(shquote "$TOKEN")"
+		printf '[ -n "${RPORT:-}" ] || RPORT=%s\n' "$(shquote "$EXPOSE_RPORT")"
+		printf '[ -n "${LHOST:-}" ] || LHOST=%s\n' "$(shquote "$EXPOSE_LHOST")"
+		printf '[ -n "${LPORT:-}" ] || LPORT=%s\n' "$(shquote "$EXPOSE_LPORT")"
+		printf '\n'
+		cat "$SERVE_BODY"
+	} > "$TOKEN_DIR/s"
+	chmod 644 "$TOKEN_DIR/s"
+
+	BOOTSTRAP_URL="http://$PRIMARY_IP:$HTTP_PORT/t/$TOKEN/s"
+
+	busybox-extras httpd -f -p "0.0.0.0:$HTTP_PORT" -h "$WEB_ROOT" &
+	HTTPD_PID=$!
+	log "bootstrap HTTP server listening on 0.0.0.0:$HTTP_PORT (pid $HTTPD_PID)"
+elif [ "$HTTP_ENABLED" -eq 1 ]; then
 	[ -f "$BOOTSTRAP_BODY" ] || die "missing $BOOTSTRAP_BODY"
 	TOKEN="$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
 	TOKEN_DIR="$WEB_ROOT/t/$TOKEN"
@@ -353,6 +481,59 @@ if [ "$HTTP_ENABLED" -eq 1 ]; then
 fi
 
 # ----------------------------------------------------------------------- banner
+if [ "$SERVE" -eq 1 ]; then
+	# Where the operator will find the key on the host. The wrapper passes the
+	# rootfs path in; without it (someone chrooting by hand) the chroot path
+	# is all there is to show.
+	DEVICE_KEY_HOST="${SSHD_TUNNEL_ROOTFS:-<rootfs>}$DEVICE_KEY"
+	cat <<EOF
+
+  $PROG — reverse-tunnel-only SSH server, --serve
+  ------------------------------------------------------------------
+  sshd port        : $PORT (all interfaces)
+  addresses        : $SERVER_IPS
+  auth mode        : key only; the identity is embedded in the device binary
+  account          : tcp (no shell, -R forwards only)
+  PermitListen     : $PERMIT_LISTEN
+  host key SHA256  : $HOST_FP
+  binaries served  : $SERVED_ARCHES
+
+  The device gets its own SSH server (Dropbear, key only), bound to
+  $EXPOSE_LHOST:$EXPOSE_LPORT on the device and exposed here as port $EXPOSE_RPORT.
+  Its host key SHA256: $DEVICE_HOST_FP
+
+  One-liner for the device (needs only a shell and wget or curl):
+    wget -O- $BOOTSTRAP_URL | sh
+
+  Or with curl:
+    curl -fsSL $BOOTSTRAP_URL | sh
+
+  It detects the architecture, pulls the matching static Dropbear with the
+  credentials already inside, checks it runs on that CPU, starts the SSH
+  server and opens the tunnel. Override the ports on the device side:
+    wget -O- $BOOTSTRAP_URL | RPORT=10023 LPORT=2223 sh
+
+  Once it connects, log into the device from this host (the account is one
+  that exists on the device — root on most routers):
+    ssh -i $DEVICE_KEY_HOST -p $EXPOSE_RPORT root@127.0.0.1
+
+  The same key, to use from anywhere this host is reachable
+  (ssh -i key -p $EXPOSE_RPORT root@$PRIMARY_IP) — regenerated on every start:
+
+EOF
+	cat "$DEVICE_KEY"
+	cat <<EOF
+
+  NOTE: that URL serves binaries with all three credentials inside over
+  plain HTTP, to anyone who knows the token, for as long as this process
+  runs. Everything is replaced on restart; the device then needs the new
+  one-liner.
+
+  Press Ctrl-C to stop.
+  ------------------------------------------------------------------
+
+EOF
+else
 cat <<EOF
 
   $PROG — reverse-tunnel-only SSH server
@@ -365,8 +546,11 @@ cat <<EOF
   host key SHA256  : $HOST_FP
   host key MD5     : $HOST_FP_MD5
 EOF
+fi
 
-if [ "$AUTH_MODE" = 'password' ]; then
+if [ "$SERVE" -eq 1 ]; then
+	:
+elif [ "$AUTH_MODE" = 'password' ]; then
 	cat <<EOF
   password         : $PASSWORD
 
@@ -390,7 +574,9 @@ EOF
 EOF
 fi
 
-if [ -n "$BOOTSTRAP_URL" ]; then
+if [ "$SERVE" -eq 1 ]; then
+	:
+elif [ -n "$BOOTSTRAP_URL" ]; then
 	cat <<EOF
 
   One-liner for the device (fetches credentials and reconnects on drop):
@@ -408,7 +594,7 @@ EOF
 	fi
 fi
 
-cat <<EOF
+[ "$SERVE" -eq 1 ] || cat <<EOF
 
   Once the client is connected, the tunnel appears on this server as
   0.0.0.0:$EXPOSE_RPORT. Press Ctrl-C to stop.

@@ -11,6 +11,8 @@
 #   ALPINE_BRANCH   Alpine branch to install from (default: latest-stable)
 #   ALPINE_MIRROR   package mirror              (default: dl-cdn.alpinelinux.org)
 #   OUT_DIR         where the tarball is written (default: <repo>/dist)
+#   DSVPN_OUT       dsvpn-<arch>.tgz to embed    (default: vpn-client/out)
+#   DBT_OUT         dropbear-tunnel-<arch>.tgz to embed (default: client/out)
 
 set -eu
 
@@ -96,6 +98,11 @@ cp -a "$REPO_DIR/rootfs-overlay/." "$ROOTFS/"
 chmod 755 "$ROOTFS/run.sh" "$ROOTFS/vpn.sh" "$ROOTFS/dsvpn.sh" "$ROOTFS/usr/local/bin/tunnel-only"
 chmod 644 "$ROOTFS/etc/ssh/sshd_config.tmpl"
 
+# The --serve mode patches credentials into the client binaries with the
+# client's own helper, so the two can never disagree about the slot format.
+cp "$REPO_DIR/client/patch-cred" "$ROOTFS/usr/local/bin/patch-cred"
+chmod 755 "$ROOTFS/usr/local/bin/patch-cred"
+
 # ------------------------------------------------------------ dsvpn binaries
 # The --dsvpn mode hands the device a static binary for its architecture,
 # because the whole point of that mode is a device with no VPN software and
@@ -108,6 +115,7 @@ chmod 644 "$ROOTFS/etc/ssh/sshd_config.tmpl"
 # unpacks what it produced. A build without them still works; --dsvpn is the
 # only mode that stops being available, and it says so at startup.
 DSVPN_OUT="${DSVPN_OUT:-$REPO_DIR/vpn-client/out}"
+case "$DSVPN_OUT" in /*) ;; *) DSVPN_OUT="$REPO_DIR/$DSVPN_OUT" ;; esac
 DSVPN_DEST="$ROOTFS/usr/local/share/sshd-tunnel/dsvpn"
 DSVPN_COUNT=0
 if [ -d "$DSVPN_OUT" ]; then
@@ -128,6 +136,38 @@ if [ "$DSVPN_COUNT" -eq 0 ]; then
 	rm -rf "$DSVPN_DEST"
 else
 	log "embedded $DSVPN_COUNT dsvpn binaries ($(du -sh "$DSVPN_DEST" | cut -f1))"
+fi
+
+# --------------------------------------------------------- dropbear binaries
+# The --serve mode hands the device a static dropbearmulti for its
+# architecture with the credentials patched in, so, like the dsvpn set, all
+# seven have to be inside the rootfs. They come from a published client-v*
+# release (client/fetch-release.sh) or a local client/build.sh run; either
+# way the tarballs sit in client/out. A build without them still works, and
+# --serve says so at startup.
+DBT_OUT="${DBT_OUT:-$REPO_DIR/client/out}"
+case "$DBT_OUT" in /*) ;; *) DBT_OUT="$REPO_DIR/$DBT_OUT" ;; esac
+DBT_DEST="$ROOTFS/usr/local/share/sshd-tunnel/dropbear"
+DBT_COUNT=0
+if [ -d "$DBT_OUT" ]; then
+	mkdir -p "$DBT_DEST"
+	for dbt_arch in x86_64 i686 armv7 armv5 aarch64 mips mipsel; do
+		dbt_tgz="$DBT_OUT/dropbear-tunnel-$dbt_arch.tgz"
+		[ -f "$dbt_tgz" ] || continue
+		tar xzf "$dbt_tgz" -C "$DBT_DEST" --strip-components=1 "dropbear-tunnel-$dbt_arch/dropbearmulti" \
+			|| die "cannot unpack $dbt_tgz"
+		mv "$DBT_DEST/dropbearmulti" "$DBT_DEST/dropbearmulti-$dbt_arch"
+		chmod 755 "$DBT_DEST/dropbearmulti-$dbt_arch"
+		DBT_COUNT=$((DBT_COUNT + 1))
+	done
+	[ -f "$DBT_OUT/RELEASE" ] && cp "$DBT_OUT/RELEASE" "$DBT_DEST/RELEASE"
+fi
+if [ "$DBT_COUNT" -eq 0 ]; then
+	log "no client binaries in $DBT_OUT — the --serve mode will be unavailable"
+	log '  (fetch them first: client/fetch-release.sh, or build them: client/build.sh <arch>)'
+	rm -rf "$DBT_DEST"
+else
+	log "embedded $DBT_COUNT dropbear binaries ($(du -sh "$DBT_DEST" | cut -f1))"
 fi
 
 # --------------------------------------------------------- runtime directories

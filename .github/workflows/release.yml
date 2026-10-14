@@ -12,6 +12,9 @@ permissions:
 
 env:
   DROPBEAR_VERSION: '2014.63'
+  # The client release whose dropbearmulti binaries go into the rootfs for
+  # the --serve mode. Bumped by hand after a client release has gone green.
+  CLIENT_RELEASE: 'client-v0.2.0'
 
 jobs:
   # The --dsvpn mode hands the device a static binary for its architecture, so
@@ -72,6 +75,13 @@ jobs:
 
       - name: Show the dsvpn binaries going into the rootfs
         run: ls -l vpn-client/out/
+
+      # The --serve mode hands the device a dropbearmulti with the credentials
+      # patched in, so all seven have to be inside the rootfs too. They are
+      # taken from a published client release rather than rebuilt here: that
+      # build already went through client/verify.sh in its own CI.
+      - name: Fetch the client binaries going into the rootfs
+        run: client/fetch-release.sh "$CLIENT_RELEASE"
 
       # The build itself must run on Alpine as root, but the job cannot use
       # `container: alpine` because actions/checkout ships a glibc-linked

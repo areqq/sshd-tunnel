@@ -42,7 +42,9 @@ for f in \
 	bin/busybox-extras \
 	bin/sh \
 	usr/local/bin/tunnel-only \
+	usr/local/bin/patch-cred \
 	usr/local/share/sshd-tunnel/bootstrap-body.sh \
+	usr/local/share/sshd-tunnel/serve-body.sh \
 	usr/local/share/sshd-tunnel/vpn-body.sh \
 	usr/local/share/sshd-tunnel/dsvpn-body.sh \
 	etc/ssh/sshd_config.tmpl
@@ -50,7 +52,7 @@ do
 	if [ -e "$ROOTFS/$f" ]; then ok "$f"; else bad "missing $f"; fi
 done
 
-for f in run.sh vpn.sh dsvpn.sh usr/local/bin/tunnel-only; do
+for f in run.sh vpn.sh dsvpn.sh usr/local/bin/tunnel-only usr/local/bin/patch-cred; do
 	[ -x "$ROOTFS/$f" ] || bad "$f is not executable"
 done
 
@@ -83,6 +85,50 @@ else
 	else
 		bad 'the native dsvpn binary does not run'
 	fi
+fi
+
+# ------------------------------------------------------------ dropbear binaries
+# Same rule as the dsvpn set: all seven or none.
+head_ 'dropbear binaries for the --serve mode'
+DBT_DIR="$ROOTFS/usr/local/share/sshd-tunnel/dropbear"
+if [ ! -d "$DBT_DIR" ]; then
+	ok 'not embedded (--serve will be unavailable, which /run.sh reports)'
+else
+	for dbt_arch in x86_64 i686 armv7 armv5 aarch64 mips mipsel; do
+		dbt_bin="$DBT_DIR/dropbearmulti-$dbt_arch"
+		if [ ! -f "$dbt_bin" ]; then
+			bad "missing dropbearmulti-$dbt_arch"
+		elif [ ! -x "$dbt_bin" ]; then
+			bad "dropbearmulti-$dbt_arch is not executable"
+		elif ! strings -t d -- "$dbt_bin" | grep -q '@@DBCRED:id:B@@'; then
+			# Without the slots there is nothing for /run.sh to patch, so this is
+			# a plain upstream Dropbear and not the client this project ships.
+			bad "dropbearmulti-$dbt_arch has no credential slots"
+		else
+			ok "dropbearmulti-$dbt_arch ($(wc -c <"$dbt_bin") bytes)"
+		fi
+	done
+	[ -f "$DBT_DIR/RELEASE" ] && ok "from client release $(cat "$DBT_DIR/RELEASE")"
+	# /run.sh runs the native one for dropbearkey, so it has to actually work.
+	if "$DBT_DIR/dropbearmulti-$(uname -m | sed -e 's/^amd64$/x86_64/' -e 's/^arm64$/aarch64/')" 2>&1 |
+		grep -q Dropbear
+	then
+		ok 'the native dropbearmulti runs'
+	else
+		bad 'the native dropbearmulti does not run'
+	fi
+	# patch-cred has to work with the chroot's own busybox, which has no
+	# `grep -b`; this runs it there on a scratch copy, the way /run.sh will.
+	if cp "$DBT_DIR/dropbearmulti-x86_64" "$ROOTFS/tmp/.verify-dbm" 2>/dev/null \
+		&& printf 'ssh-ed25519 AAAA verify\n' > "$ROOTFS/tmp/.verify-ak" \
+		&& chroot "$ROOTFS" /usr/local/bin/patch-cred /tmp/.verify-dbm ak /tmp/.verify-ak >/dev/null 2>&1 \
+		&& strings -- "$ROOTFS/tmp/.verify-dbm" | grep -q '@@DBCRED:ak:B@@c3NoLWVkMjU1MTkgQUFBQSB2ZXJpZnkK'
+	then
+		ok 'patch-cred works inside the chroot'
+	else
+		bad 'patch-cred does not work inside the chroot'
+	fi
+	rm -f "$ROOTFS/tmp/.verify-dbm" "$ROOTFS/tmp/.verify-ak"
 fi
 
 head_ 'tunnel account'

@@ -25,9 +25,28 @@ BEGIN="@@DBCRED:$ID:B@@"
 END="@@DBCRED:$ID:E@@"
 MARKER_LEN=15
 
-# Byte offset of each marker (grep -b reports the match's start offset).
-boff="$(grep -abo -- "$BEGIN" "$BIN" | head -1 | cut -d: -f1)"
-eoff="$(grep -abo -- "$END"   "$BIN" | head -1 | cut -d: -f1)"
+# Byte offset of each marker. GNU grep reports a match's start offset with
+# -b; busybox grep (the sshd-tunnel chroot, most routers) has no -b at all,
+# so the fallback goes through `strings -t d`, which both GNU binutils and
+# busybox implement: a slot is one printable run (begin marker, payload, end
+# marker, no NUL in between), so the offset of that run plus the marker's
+# position within it is the marker's offset.
+marker_offset() {
+	if grep -abo -- "$1" "$BIN" 2>/dev/null | head -1 | cut -d: -f1 | grep -q .; then
+		grep -abo -- "$1" "$BIN" | head -1 | cut -d: -f1
+		return
+	fi
+	strings -t d -- "$BIN" 2>/dev/null | awk -v m="$1" '
+		{
+			off = $1
+			line = $0
+			sub(/^ *[0-9]+ /, "", line)
+			i = index(line, m)
+			if (i > 0) { print off + i - 1; exit }
+		}'
+}
+boff="$(marker_offset "$BEGIN")"
+eoff="$(marker_offset "$END")"
 [ -n "$boff" ] || { echo "patch-cred: begin marker for '$ID' not found" >&2; exit 1; }
 [ -n "$eoff" ] || { echo "patch-cred: end marker for '$ID' not found" >&2; exit 1; }
 

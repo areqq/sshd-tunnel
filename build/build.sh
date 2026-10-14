@@ -10,6 +10,10 @@
 #   ARCH              target arch        (default: x86_64)
 #   ALPINE_BRANCH     Alpine branch      (default: latest-stable)
 #   VERSION           stamped into the VERSION file (default: dev)
+#   DSVPN_OUT         dsvpn tarballs to embed, relative to the repo
+#                     (default: vpn-client/out)
+#   DBT_OUT           client tarballs to embed, relative to the repo
+#                     (default: client/out)
 
 set -eu
 
@@ -35,5 +39,7 @@ exec "$CONTAINER_ENGINE" run --rm \
 	-e "ARCH=${ARCH:-x86_64}" \
 	-e "ALPINE_BRANCH=${ALPINE_BRANCH:-latest-stable}" \
 	-e "VERSION=${VERSION:-dev}" \
+	-e "DSVPN_OUT=${DSVPN_OUT:-vpn-client/out}" \
+	-e "DBT_OUT=${DBT_OUT:-client/out}" \
 	"$IMAGE" \
 	sh /work/build/build-rootfs.sh

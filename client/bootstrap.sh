@@ -75,8 +75,14 @@ if [ "$SERVE" -eq 1 ]; then
 	# -F foreground, -E log to stderr; bind to the loopback host the tunnel
 	# points at. Host key and the authorized key both come from the embedded
 	# slots, so this works on a read-only rootfs with no /etc/dropbear.
+	#
+	# -r names a file that does not exist on purpose: with any -r given,
+	# dropbear skips its default key files (so a device's own /etc/dropbear
+	# key cannot shadow the embedded one), and a missing file is only a logged
+	# warning before the embedded key takes over. -r /dev/null does not work
+	# for this: an empty file parses as a truncated key and is fatal.
 	say "starting embedded server on $LHOST:$LPORT"
-	"$BIN" dropbear -F -E -r /dev/null -p "$LHOST:$LPORT" >/tmp/$PROG-srv.log 2>&1 &
+	"$BIN" dropbear -F -E -r /tmp/$PROG-no-hostkey-on-disk -p "$LHOST:$LPORT" >/tmp/$PROG-srv.log 2>&1 &
 	SRV_PID=$!
 fi
 
