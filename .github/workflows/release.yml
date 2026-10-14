@@ -177,6 +177,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
+            --latest \
             dist/sshd-tunnel-x86_64.tgz \
             dist/sshd-tunnel-x86_64.tgz.sha256 \
             install.sh

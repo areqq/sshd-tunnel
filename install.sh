@@ -9,7 +9,7 @@
 #
 # Environment:
 #   SSHD_TUNNEL_REPO     owner/name          (default: areqq/sshd-tunnel)
-#   SSHD_TUNNEL_VERSION  release tag or latest (default: latest)
+#   SSHD_TUNNEL_VERSION  release tag or latest (default: latest v* release)
 #   SSHD_TUNNEL_ARCH     architecture        (default: x86_64)
 #   SSHD_TUNNEL_DIR      install directory   (default: ./sshd-tunnel)
 
@@ -22,11 +22,6 @@ ARCH="${SSHD_TUNNEL_ARCH:-x86_64}"
 DEST="${SSHD_TUNNEL_DIR:-./sshd-tunnel}"
 
 TARBALL="sshd-tunnel-$ARCH.tgz"
-if [ "$VERSION" = 'latest' ]; then
-	BASE_URL="https://github.com/$REPO/releases/latest/download"
-else
-	BASE_URL="https://github.com/$REPO/releases/download/$VERSION"
-fi
 
 log() { printf '%s: %s\n' "$PROG" "$*" >&2; }
 die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
@@ -34,8 +29,10 @@ die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
 # -------------------------------------------------------------------- tooling
 if command -v curl >/dev/null 2>&1; then
 	fetch() { curl -fsSL -o "$2" "$1"; }
+	fetch_out() { curl -fsSL "$1"; }
 elif command -v wget >/dev/null 2>&1; then
 	fetch() { wget -q -O "$2" "$1"; }
+	fetch_out() { wget -q -O- "$1"; }
 else
 	die 'need curl or wget'
 fi
@@ -51,6 +48,23 @@ fi
 for tool in tar mktemp; do
 	command -v "$tool" >/dev/null 2>&1 || die "need $tool"
 done
+
+# --------------------------------------------------------------- release tag
+# The repo carries server (v*), client (client-v*) and vpn-client
+# (vpn-client-v*) releases. GitHub's /releases/latest alias is simply the
+# most recently published one, whatever its prefix, so "latest" has to be
+# resolved to the newest v* tag by hand.
+if [ "$VERSION" = 'latest' ]; then
+	log 'looking up the latest server release'
+	VERSION="$(fetch_out "https://api.github.com/repos/$REPO/releases" 2>/dev/null \
+		| tr ',' '\n' \
+		| grep '"tag_name"' \
+		| grep '"v[0-9]' \
+		| head -1 \
+		| sed -e 's/.*"\(v[^"]*\)".*/\1/')" || true
+	[ -n "$VERSION" ] || die 'cannot determine the latest v* release; set SSHD_TUNNEL_VERSION'
+fi
+BASE_URL="https://github.com/$REPO/releases/download/$VERSION"
 
 # ------------------------------------------------------------------- download
 WORKDIR="$(mktemp -d)"
