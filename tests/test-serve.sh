@@ -12,7 +12,7 @@ cd "$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 TEST_NAME='serve mode'
 . tests/lib.sh
 
-require python3 od sed timeout curl ssh ssh-keygen ssh-keyscan strings
+require python3 od sed timeout curl ssh ssh-keygen ssh-keyscan strings pkill
 
 PORT="$(free_port)"
 RPORT="$(free_port)"
@@ -149,8 +149,10 @@ fi
 # This host is the device. Nothing from PATH is used by the script except
 # the downloader; the SSH server and client are the fetched binary.
 mkdir -p "$DEVICE_DIR"
-DIR="$DEVICE_DIR" HOME="$TEST_TMP" sh "$TEST_TMP/s" >"$TEST_TMP/bootstrap.log" 2>&1 &
-BOOTSTRAP_PID=$!
+# As a terminal would run it (see start_detached), so Ctrl-C can be
+# simulated below: delivered to the script, its SSH server and its dbclient.
+DIR="$DEVICE_DIR" HOME="$TEST_TMP" start_detached sh "$TEST_TMP/s" >"$TEST_TMP/bootstrap.log" 2>&1
+BOOTSTRAP_PID=$DEVICE_PID
 
 if wait_for_port "$RPORT" 40; then
 	ok "the one-liner brought up the reverse listener on $RPORT"
@@ -189,6 +191,25 @@ OUT="$(timeout 30 ssh -i "$TEST_TMP/stranger" -p "$RPORT" \
 	-o IdentitiesOnly=yes -o UserKnownHostsFile="$TEST_TMP/known_hosts" -o StrictHostKeyChecking=yes \
 	-o BatchMode=yes "$LOGIN_USER@127.0.0.1" 'echo stranger-got-in' 2>&1 || true)"
 check_absent 'a key the device does not know is refused' 'stranger-got-in' "$OUT"
+
+# ------------------------------------------------------- Ctrl-C on the device
+# Must end the script and take the device's SSH server with it; an INT trap
+# that merely cleaned up and returned left the loop retrying forever.
+interrupt_group "$BOOTSTRAP_PID"
+if waited="$(wait_for_exit "$BOOTSTRAP_PID" 10)"; then
+	ok "Ctrl-C ends the one-liner (after ${waited}s)"
+else
+	fail 'the one-liner is still running 10s after Ctrl-C'
+	pkill -9 -g "$BOOTSTRAP_PID" 2>/dev/null || true
+fi
+wait "$BOOTSTRAP_PID" 2>/dev/null || true
+sleep 1
+if pgrep -f "$DEVICE_DIR/dropbearmulti" >/dev/null 2>&1; then
+	fail "the device's SSH server or client survived Ctrl-C"
+else
+	ok "the device's SSH server and client are gone after Ctrl-C"
+fi
+BOOTSTRAP_PID=''
 
 # ------------------------------------------------------------- cleanup
 stop_server

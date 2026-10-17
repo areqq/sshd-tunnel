@@ -66,10 +66,26 @@ port_in_use() {
 		/proc/net/tcp /proc/net/tcp6 2>/dev/null
 }
 
+# Any socket on the port, in any state, not only a listener: a port that a
+# client connection happens to be using as its source cannot be bound on
+# 0.0.0.0 either, and sshd's -R bind then fails with "Address in use".
+port_busy() {
+	hexport="$(printf '%04X' "$1")"
+	awk -v p=":$hexport" 'NR > 1 && index($2, p) { found = 1 } END { exit !found }' \
+		/proc/net/tcp /proc/net/tcp6 2>/dev/null
+}
+
 free_port() {
+	# Below the kernel's ephemeral range (32768-60999 by default), so a port
+	# picked here cannot be handed to a client connection a moment later.
+	# The earlier 20000-39999 overlapped it, and the suite's own connections
+	# occasionally took the port between picking it and sshd binding it.
+	eph_low="$(awk '{print $1}' /proc/sys/net/ipv4/ip_local_port_range 2>/dev/null || echo 32768)"
+	span=$((eph_low - 10000))
+	[ "$span" -gt 1000 ] || span=1000
 	while :; do
-		candidate=$((20000 + $(od -An -tu2 -N2 /dev/urandom | tr -d ' ') % 20000))
-		port_in_use "$candidate" || { printf '%s\n' "$candidate"; return 0; }
+		candidate=$((10000 + $(od -An -tu2 -N2 /dev/urandom | tr -d ' ') % span))
+		port_busy "$candidate" || { printf '%s\n' "$candidate"; return 0; }
 	done
 }
 
@@ -189,6 +205,45 @@ try:
 except OSError as exc:
     sys.stdout.write('connection failed: %s' % exc)
 PY
+}
+
+# ------------------------------------------------------------- device scripts
+# Run a device-side script the way a terminal would, so Ctrl-C can be
+# simulated: in its own session and process group, with SIGINT back at its
+# default. The second part matters: a background job of a non-interactive
+# shell has SIGINT ignored, every child inherits that across exec, and a
+# script cannot trap a signal it inherited as ignored -- so a plain `sh s &`
+# would make any Ctrl-C test pass vacuously or fail wrongly. Sets DEVICE_PID.
+start_detached() {
+	python3 -c 'import os, signal, sys
+os.setsid()
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])' "$@" &
+	DEVICE_PID=$!
+}
+
+# Ctrl-C: SIGINT to the whole process group, as a terminal delivers it.
+interrupt_group() {
+	pkill -INT -g "$1" 2>/dev/null || true
+}
+
+# A process that has exited but not been reaped is a zombie, and kill -0
+# still succeeds on one; the state column is what tells.
+is_alive() {
+	st="$(ps -o stat= -p "$1" 2>/dev/null | cut -c1)"
+	[ -n "$st" ] && [ "$st" != 'Z' ]
+}
+
+# wait_for_exit <pid> [timeout-seconds]; prints the seconds waited.
+wait_for_exit() {
+	waited=0
+	limit="${2:-10}"
+	while is_alive "$1" && [ "$waited" -lt "$limit" ]; do
+		sleep 1
+		waited=$((waited + 1))
+	done
+	printf '%s\n' "$waited"
+	! is_alive "$1"
 }
 
 # -------------------------------------------------------------- dropbear 2014

@@ -8,7 +8,7 @@ cd "$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 TEST_NAME='http bootstrap'
 . tests/lib.sh
 
-require python3 od sed timeout curl
+require python3 od sed timeout curl pkill
 require_dropbear_2014
 
 PORT="$(free_port)"
@@ -75,9 +75,11 @@ check 'it carries the reverse mapping' "$RPORT" "$(cat "$TEST_TMP/b")"
 # --------------------------------------------------------------------- run it
 # PATH is prepended so the script picks the 2014 dbclient, exactly as it would
 # find the device's own build.
+# As a terminal would run it (see start_detached), so Ctrl-C can be
+# simulated below: delivered to the script and its dbclient together.
 PATH="$DROPBEAR_DIR:$PATH" HOME="$TEST_TMP" TMPDIR="$TEST_TMP" \
-	sh "$TEST_TMP/b" >"$TEST_TMP/bootstrap.log" 2>&1 &
-BOOTSTRAP_PID=$!
+	start_detached sh "$TEST_TMP/b" >"$TEST_TMP/bootstrap.log" 2>&1
+BOOTSTRAP_PID=$DEVICE_PID
 
 if wait_for_port "$RPORT" 40; then
 	ok "the bootstrap script brought up the reverse listener on $RPORT"
@@ -92,7 +94,24 @@ fi
 check 'bytes traverse the bootstrapped tunnel' "$ECHO_TOKEN" "$(read_through_tunnel "$RPORT")"
 check 'the script reports which client it chose' 'using dbclient' "$(cat "$TEST_TMP/bootstrap.log")"
 
-kill "$BOOTSTRAP_PID" 2>/dev/null || true
+# Ctrl-C must end the script. An earlier version's INT trap deleted the key
+# and returned, so the loop went on retrying without it and could not be
+# stopped from the keyboard at all.
+interrupt_group "$BOOTSTRAP_PID"
+if waited="$(wait_for_exit "$BOOTSTRAP_PID" 10)"; then
+	ok "Ctrl-C ends the bootstrap script (after ${waited}s)"
+else
+	fail 'the bootstrap script is still running 10s after Ctrl-C'
+	pkill -9 -g "$BOOTSTRAP_PID" 2>/dev/null || true
+fi
+wait "$BOOTSTRAP_PID" 2>/dev/null || true
+check 'it says so' 'interrupted' "$(cat "$TEST_TMP/bootstrap.log")"
+check_absent 'it does not retry without the key' 'Failed loading keyfile' "$(cat "$TEST_TMP/bootstrap.log")"
+if ls -d "$TEST_TMP"/sshd-tunnel.* >/dev/null 2>&1; then
+	fail 'the work directory with the key survived Ctrl-C'
+else
+	ok 'the work directory with the key is removed on Ctrl-C'
+fi
 BOOTSTRAP_PID=''
 
 # ----------------------------------------------------- the same flow with a password

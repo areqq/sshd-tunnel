@@ -20,7 +20,11 @@ have() {
 
 WORKDIR="${TMPDIR:-/tmp}/sshd-tunnel.$$"
 mkdir -p "$WORKDIR" || { say "cannot create $WORKDIR"; exit 1; }
-trap 'rm -rf "$WORKDIR"' EXIT INT TERM HUP
+# The signal traps must exit, not just clean up: a trap that returns lets
+# the retry loop below continue after Ctrl-C, with the key already deleted,
+# and nothing short of kill -9 then stops it.
+trap 'rm -rf "$WORKDIR"' EXIT
+trap 'say "interrupted"; exit 130' INT TERM HUP
 
 fetch() {
 	if have wget; then
@@ -108,5 +112,6 @@ while :; do
 	sleep "$DELAY"
 	# Back off to a minute so a permanently rejected client does not hammer
 	# the server, but stay responsive for ordinary link flaps.
-	[ "$DELAY" -lt 60 ] && DELAY=$((DELAY * 2)) || DELAY=60
+	DELAY=$((DELAY * 2))
+	[ "$DELAY" -le 60 ] || DELAY=60
 done

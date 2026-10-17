@@ -143,7 +143,11 @@ cleanup() {
 	[ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null
 	return 0
 }
-trap cleanup EXIT INT TERM HUP
+# The signal traps must exit, not just clean up: a trap that returns lets
+# the retry loop below continue after Ctrl-C, with the device's SSH server
+# already killed, and nothing short of kill -9 then stops it.
+trap cleanup EXIT
+trap 'say "interrupted"; exit 130' INT TERM HUP
 
 # SFTP builds exec /tmp/sftp-server for the subsystem; multi-call dispatch
 # keys off argv[0], so a symlink is all that takes. Core builds have no such
@@ -183,5 +187,6 @@ while :; do
 	sleep "$DELAY"
 	# Back off to a minute so a permanently rejected client does not hammer
 	# the server, but stay responsive for ordinary link flaps.
-	[ "$DELAY" -lt 60 ] && DELAY=$((DELAY * 2)) || DELAY=60
+	DELAY=$((DELAY * 2))
+	[ "$DELAY" -le 60 ] || DELAY=60
 done

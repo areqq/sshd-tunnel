@@ -68,10 +68,18 @@ for key_type in $KEY_TYPES; do
 	TUNNEL_PID=$!
 
 	if wait_for_port "$RPORT" 30; then
-		check "$key_type: bytes traverse the tunnel" "$ECHO_TOKEN" "$(read_through_tunnel "$RPORT")"
+		RESULT="$(read_through_tunnel "$RPORT")"
+		check "$key_type: bytes traverse the tunnel" "$ECHO_TOKEN" "$RESULT"
+		case "$RESULT" in
+			*"$ECHO_TOKEN"*) ;;
+			*) sed 's/^/   client | /' "$TEST_TMP/dbclient.log"; server_log | sed 's/^/   server | /' ;;
+		esac
 	else
 		fail "$key_type: the reverse listener never appeared"
-		sed 's/^/          | /' "$TEST_TMP/dbclient.log"
+		# Seen once as "Connection refused" from dbclient right after sshd was
+		# observed listening; the server's own log is what would explain it.
+		sed 's/^/   client | /' "$TEST_TMP/dbclient.log"
+		server_log | sed 's/^/   server | /'
 	fi
 
 	kill "$TUNNEL_PID" 2>/dev/null || true
