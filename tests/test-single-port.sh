@@ -155,4 +155,25 @@ check_absent 'the two-port layout starts no sslh' 'sslh listening' "$(server_log
 port_bound_wildcard "$HTTP2" && ok 'httpd is public in the two-port layout' || fail 'httpd is not public in the two-port layout'
 check 'the two-port layout advertises the HTTP port' ":$HTTP2/t/" "$(extract_bootstrap_url)"
 
+# ------------------------------------------------- the advertised address
+# Behind NAT the one-liner must name the public address, not an interface
+# one. An explicit value is passed straight through; left unset, the wrapper
+# has to at least attempt the lookup and say what came of it (v0.5.0 shipped
+# with the lookup never running, which this would have caught).
+stop_server
+PORT3="$(free_port)"
+TEST_PUBLIC_IP='203.0.113.9' start_server "$PORT3" --no-http
+wait_for_port "$PORT3" 30 || { fail 'the server did not start for the public address check'; summary; exit 1; }
+check 'an explicit public address is advertised' 'tcp@203.0.113.9' "$(server_log)"
+check 'the banner shows it as public, with the local addresses' '203.0.113.9 (public; local:' "$(server_log)"
+stop_server
+PORT4="$(free_port)"
+TEST_PUBLIC_IP='' start_server "$PORT4" --no-http
+wait_for_port "$PORT4" 30 || { fail 'the server did not start for the lookup check'; summary; exit 1; }
+case "$(server_log)" in
+	*'public IPv4 (ifconfig.me):'*) ok 'the wrapper looked the public address up' ;;
+	*'public address lookup failed'*) ok 'the wrapper attempted the lookup (no answer here)' ;;
+	*) fail 'the wrapper never attempted the public address lookup' ;;
+esac
+
 summary

@@ -104,8 +104,9 @@ start_server() {
 	: > "$SERVER_LOG"
 	# The wrapper asks ifconfig.me for the public address and advertises it;
 	# a test has to reach its own server, so the lookup is switched off and
-	# the interface address is advertised instead.
-	$SUDO env SSHD_TUNNEL_PUBLIC_IP=none "$INSTALL_DIR/run" "$@" >"$SERVER_LOG" 2>&1 &
+	# the interface address is advertised instead. A test of that very
+	# mechanism sets TEST_PUBLIC_IP to a value, or to '' for a real lookup.
+	$SUDO env SSHD_TUNNEL_PUBLIC_IP="${TEST_PUBLIC_IP-none}" "$INSTALL_DIR/run" "$@" >"$SERVER_LOG" 2>&1 &
 	SERVER_PID=$!
 }
 

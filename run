@@ -167,13 +167,6 @@ else
 	prepare_mounts
 fi
 
-# ------------------------------------------------------------ server addresses
-if [ -z "${SSHD_TUNNEL_IP:-}" ]; then
-	SSHD_TUNNEL_IP="$(ip -4 -o addr show scope global 2>/dev/null |
-		awk '{ split($4, a, "/"); printf "%s ", a[1] }')"
-	[ -n "$SSHD_TUNNEL_IP" ] || SSHD_TUNNEL_IP="$(hostname -I 2>/dev/null || true)"
-fi
-
 # ------------------------------------------------------------- public address
 # Behind NAT the interface addresses are useless to the device: the one-liner
 # has to name the address the port forward is reachable at. Asked of
@@ -181,6 +174,11 @@ fi
 # short timeout so an offline host is not held up. An explicit SSHD_TUNNEL_IP
 # is the operator's decision and skips the lookup; so does
 # SSHD_TUNNEL_PUBLIC_IP=none. Only a well-formed dotted quad is passed on.
+#
+# This has to run before the server-addresses section below, which fills
+# SSHD_TUNNEL_IP in from the interfaces when the operator left it unset --
+# after that the "operator set it" test is always true (v0.5.0 shipped with
+# the lookup dead for exactly that reason).
 is_ipv4() {
 	case "$1" in
 		*[!0-9.]*|'') return 1 ;;
@@ -208,6 +206,13 @@ elif [ -z "$PUBLIC_IP" ]; then
 	fi
 else
 	is_ipv4 "$PUBLIC_IP" || die "SSHD_TUNNEL_PUBLIC_IP is not an IPv4 address: $PUBLIC_IP"
+fi
+
+# ------------------------------------------------------------ server addresses
+if [ -z "${SSHD_TUNNEL_IP:-}" ]; then
+	SSHD_TUNNEL_IP="$(ip -4 -o addr show scope global 2>/dev/null |
+		awk '{ split($4, a, "/"); printf "%s ", a[1] }')"
+	[ -n "$SSHD_TUNNEL_IP" ] || SSHD_TUNNEL_IP="$(hostname -I 2>/dev/null || true)"
 fi
 
 # ------------------------------------------------------------------- handover
