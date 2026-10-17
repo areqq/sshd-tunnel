@@ -33,12 +33,16 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential bzip2 xz-utils qemu-user-static >/dev/null
 
-      # Toolchains are large; cache them per arch so only the first run downloads.
-      - name: Cache the Bootlin toolchain
+      # Only the compiled musl/compiler-rt for this target is worth caching
+      # (~100 MB): the zig release itself is a 55 MB download that takes
+      # seconds, while unpacked it is 400 MB, which would make the cache
+      # entry cost more than it saves. Keyed per arch because each target
+      # builds its own objects into that cache.
+      - name: Cache zig's compiled musl for this target
         uses: actions/cache@v4
         with:
-          path: client/toolchain
-          key: bootlin-${{ matrix.arch }}-2025.08-1
+          path: client/toolchain/zig-cache
+          key: zig-0.16.0-musl-${{ matrix.arch }}
 
       - name: Cache the Dropbear source
         uses: actions/cache@v4
@@ -85,11 +89,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential bzip2 xz-utils qemu-user-static >/dev/null
 
-      - name: Cache the Bootlin toolchain
+      - name: Cache zig's compiled musl for this target
         uses: actions/cache@v4
         with:
-          path: client/toolchain
-          key: bootlin-${{ matrix.arch }}-2025.08-1
+          path: client/toolchain/zig-cache
+          key: zig-0.16.0-musl-sftp-${{ matrix.arch }}
 
       # Both Dropbear and OpenSSH tarballs live under client/src-cache; one key
       # for the pair keeps this a single cache entry instead of two competing

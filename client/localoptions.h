@@ -16,9 +16,15 @@
 #define DROPBEAR_DELAY_HOSTKEY     0   /* host-key wbudowany, nic nie zapisujemy */
 #define DROPBEAR_X11FWD            0
 
-/* ---------- wymiana kluczy: post-quantum + curve25519 ---------- */
-#define DROPBEAR_MLKEM768          1   /* mlkem768x25519-sha256  (RFC-owy PQ, OpenSSH >=10) */
-#define DROPBEAR_SNTRUP761         1   /* sntrup761x25519-sha512 (OpenSSH >=8.5) */
+/* ---------- key exchange: curve25519 and ECDH, no post-quantum ---------- */
+/* Post-quantum key exchange is deliberately off: it cost 67.5 KB of the
+ * binary (55.6 for mlkem768, 10.4 for sntrup761, 12% of the mipsel build) and
+ * the only thing it buys is protection against traffic recorded today being
+ * decrypted years from now, which is not a threat this project cares about.
+ * curve25519-sha256 is what gets negotiated instead; OpenSSH has offered it
+ * since 6.5. */
+#define DROPBEAR_MLKEM768          0   /* mlkem768x25519-sha256  (RFC-owy PQ, OpenSSH >=10) */
+#define DROPBEAR_SNTRUP761         0   /* sntrup761x25519-sha512 (OpenSSH >=8.5) */
 #define DROPBEAR_CURVE25519        1   /* curve25519-sha256 */
 #define DROPBEAR_ECDH              1   /* ecdh-sha2-nistp256/384/521 */
 #define DROPBEAR_DH_GROUP14_SHA256 1   /* fallback dla starszych serwerow */

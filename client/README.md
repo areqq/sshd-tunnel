@@ -50,7 +50,7 @@ ASUSWRT-Merlin (armv7) hardware.
 
 ## Architectures
 
-Built by CI into one `.tgz` each. All static musl (Bootlin toolchains), no
+Built by CI into one `.tgz` each. All static musl, built with `zig cc`, no
 libraries, no interpreter.
 
 | arch | slug | typical targets | float |
@@ -128,11 +128,19 @@ The identity comes from the `id` slot, so no key file is needed on the device.
 
 ## Crypto
 
-Modern only — see `localoptions.h`. KEX: `mlkem768x25519-sha256`,
-`sntrup761x25519-sha512`, `curve25519-sha256`, `ecdh-nistp*`, with
-`diffie-hellman-group14-sha256` as the sole non-EC fallback. Ciphers:
+Modern only — see `localoptions.h`. KEX: `curve25519-sha256`, `ecdh-nistp*`,
+with `diffie-hellman-group14-sha256` as the sole non-EC fallback. Ciphers:
 chacha20-poly1305, AES-GCM, AES-CTR. Signatures: ed25519, ecdsa, rsa-sha2-256.
 Deliberately cut: SHA-1, CBC, 3DES, DSS, group1, zlib.
+
+**No post-quantum key exchange.** `mlkem768x25519-sha256` and
+`sntrup761x25519-sha512` are both off. They cost 34-70 KB depending on the
+architecture (12% of the MIPS binary) and the only thing they protect against
+is traffic recorded today being decrypted years from now, which is not a
+threat this project is built for. `curve25519-sha256` is what gets negotiated
+instead, and OpenSSH has offered it since 6.5. Verified against the real
+server this project ships (OpenSSH 10.3p1 in the chroot): the reverse forward
+comes up and carries data with `curve25519-sha256` alone.
 
 ## Building locally
 
@@ -141,13 +149,51 @@ client/build.sh x86_64      # fetches toolchain + source, writes client/out/*.tg
 client/build.sh mipsel
 ```
 
-Needs `curl`, `tar`, `make` and a host C compiler; everything arch-specific is
-fetched on demand.
+Needs `curl`, `tar`, `make`, `patch` and `sha256sum`. The cross-compiler is
+`zig cc` (zig 0.16.0, pinned by SHA-256): one download serves every target,
+and it compiles musl for a target on first use into `client/toolchain/`.
+`ZIG_VER` is settable but only 0.16.0 has a pinned checksum in the script.
+
+Two targets need a little help, both linked in only for the architecture that
+needs them and both covered by a test the build runs under qemu:
+
+- **armv5** has no atomic instructions, so clang emits calls to the legacy
+  `__sync_*` libcalls. zig's compiler-rt does not implement them while zig's
+  own C runtime (the allocator behind `malloc`) calls three, so
+  `patches/arm-pre-v6-sync.c` supplies those through the kernel's user-helper
+  page, the way libgcc does.
+- **mips/mipsel** get a correct `pipe()` from `patches/mips-o32-pipe.c`. On
+  the o32 ABI `pipe(2)` returns both descriptors in registers rather than
+  through the pointer; zig 0.16.0's own `pipe()` ignores that, which leaves
+  the server's child process without a working pipe. The failure is quiet —
+  a login that succeeds and then produces no output at all.
 
 ### Size
 
-Two size-reduction attempts on top of the existing `-Os -ffunction-sections
---gc-sections`, both tried and reverted — see `TODO.md` for the full story:
+Against the previous per-arch Bootlin gcc toolchains, clang's `-Os` is
+noticeably tighter on ARM and 32-bit x86 and slightly worse on MIPS:
+
+| arch | now | previously | |
+|---|---|---|---|
+| `i686` | 393,304 | 497,736 | -21.0% |
+| `armv7` | 342,852 | 432,232 | -20.7% |
+| `armv5` | 350,340 | 436,324 | -19.7% |
+| `x86_64` | 370,584 | 441,752 | -16.1% |
+| `aarch64` | 370,504 | 441,648 | -16.1% |
+| `mips` | 498,004 | 530,052 | -6.0% |
+| `mipsel` | 499,252 | 530,060 | -5.8% |
+
+Stripped `dropbearmulti`, core build; "previously" is the Bootlin gcc build
+with post-quantum key exchange enabled. Two changes account for it: clang's
+`-Os` is tighter than gcc's on ARM and 32-bit x86 (and about 7% worse on
+MIPS), and dropping the two post-quantum key exchanges saves 34-70 KB. The
+RSA handshake is about 30% slower with clang on ARM32 (measured on real
+hardware, see `TODO.md`); the ed25519 path, which is what the tunnel uses, is
+level.
+
+Two further size-reduction attempts on top of the existing `-Os
+-ffunction-sections --gc-sections`, both tried under gcc and reverted — see
+`TODO.md` for the full story:
 
 - `-flto`: every arch failed to link. Dropbear's bundled
   `libtomcrypt.a`/`libtommath.a` are plain, non-LTO archives placed once at

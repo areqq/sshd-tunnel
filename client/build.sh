@@ -8,20 +8,24 @@
 #
 # arch: x86_64 | i686 | armv7 | armv5 | aarch64 | mips | mipsel
 #
-# Everything is fetched on demand (Bootlin musl toolchain + Dropbear source),
-# so a clean machine needs only curl, tar, make and a C compiler for the host.
+# The cross-compiler is `zig cc`: one ~55 MB download covers every target,
+# with musl built on demand into a cache instead of seven per-arch toolchains.
+# Everything is fetched on demand (zig + Dropbear source), so a clean machine
+# needs only curl, tar, make and sha256sum.
 #
 # Environment:
 #   DB_VER      Dropbear version           (default: 2026.94)
-#   TC_VER      Bootlin toolchain release  (default: 2025.08-1)
+#   ZIG_VER     zig release                (default: 0.16.0)
 #   OUT_DIR     where the tarball is written (default: client/out)
 #   JOBS        parallel make jobs         (default: nproc)
+#   WITH_SFTP   1 to merge OpenSSH's sftp + sftp-server into the binary
+#   OPENSSH_VER OpenSSH version for WITH_SFTP (default: 9.9p2)
 
 set -eu
 
 ARCH="${1:?usage: build.sh <x86_64|i686|armv7|armv5|aarch64|mips|mipsel>}"
 DB_VER="${DB_VER:-2026.94}"
-TC_VER="${TC_VER:-2025.08-1}"
+ZIG_VER="${ZIG_VER:-0.16.0}"
 
 HERE="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 OUT_DIR="${OUT_DIR:-$HERE/out}"
@@ -30,49 +34,140 @@ JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
 
 DB_TARBALL="dropbear-$DB_VER.tar.bz2"
 DB_URL="https://matt.ucc.asn.au/dropbear/releases/$DB_TARBALL"
-TC_BASE="https://toolchains.bootlin.com/downloads/releases/toolchains"
 
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
 
-# arch -> Bootlin toolchain slug + arch-specific CFLAGS. Soft-float on MIPS and
-# armv5 because that is what the overwhelming majority of those devices ship.
+# arch -> zig target + CPU. HOST_TRIPLE is what autoconf's config.sub gets
+# (zig's "x86" is not a CPU name it knows, hence the i686 spelling). The CPU
+# flag lives inside the compiler wrapper below, so *every* object in the
+# binary — Dropbear's, libtom's and OpenSSH's alike — is built for the same
+# CPU and float ABI. That was not true with per-project CFLAGS and cost a
+# real SIGILL on MIPS once (see TODO.md); it cannot recur this way.
+# armv5 and mips/mipsel use the soft-float musl ABI (*eabi, no "hf") because
+# that is what the overwhelming majority of those devices ship.
 case "$ARCH" in
-	x86_64)  TC_SLUG='x86-64';       ACFLAGS='' ;;
-	i686)    TC_SLUG='x86-i686';     ACFLAGS='' ;;
-	armv7)   TC_SLUG='armv7-eabihf'; ACFLAGS='-mcpu=cortex-a7 -mfpu=neon-vfpv4' ;;
-	armv5)   TC_SLUG='armv5-eabi';   ACFLAGS='-msoft-float' ;;
-	aarch64) TC_SLUG='aarch64';      ACFLAGS='' ;;
-	mips)    TC_SLUG='mips32';       ACFLAGS='-msoft-float' ;;
-	mipsel)  TC_SLUG='mips32el';     ACFLAGS='-msoft-float' ;;
+	x86_64)  ZIG_TARGET='x86_64-linux-musl';     HOST_TRIPLE="$ZIG_TARGET";  ZCPU='' ;;
+	i686)    ZIG_TARGET='x86-linux-musl';        HOST_TRIPLE='i686-linux-musl'; ZCPU='-mcpu=i686' ;;
+	armv7)   ZIG_TARGET='arm-linux-musleabihf';  HOST_TRIPLE="$ZIG_TARGET";  ZCPU='-mcpu=cortex_a7' ;;
+	armv5)   ZIG_TARGET='arm-linux-musleabi';    HOST_TRIPLE="$ZIG_TARGET";  ZCPU='-mcpu=arm926ej_s' ;;
+	aarch64) ZIG_TARGET='aarch64-linux-musl';    HOST_TRIPLE="$ZIG_TARGET";  ZCPU='' ;;
+	mips)    ZIG_TARGET='mips-linux-musleabi';   HOST_TRIPLE="$ZIG_TARGET";  ZCPU='-mcpu=mips32' ;;
+	mipsel)  ZIG_TARGET='mipsel-linux-musleabi'; HOST_TRIPLE="$ZIG_TARGET";  ZCPU='-mcpu=mips32' ;;
 	*) die "unknown arch: $ARCH" ;;
 esac
 
-TC_NAME="$TC_SLUG--musl--stable-$TC_VER"
-TC_DIR="$HERE/toolchain/$TC_NAME"
-
-for tool in curl tar make sed awk; do
+for tool in curl tar make sed awk sha256sum; do
 	command -v "$tool" >/dev/null 2>&1 || die "missing host tool: $tool"
 done
 
 # ---------------------------------------------------------------- toolchain
-if [ ! -d "$TC_DIR" ]; then
-	log "fetching toolchain $TC_NAME"
+# One zig tarball per *host* (the machine running this script), pinned by
+# SHA-256 from https://ziglang.org/download/index.json.
+HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+	x86_64)  ZIG_SHA='70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00' ;;
+	aarch64) ZIG_SHA='ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17' ;;
+	*) die "no pinned zig $ZIG_VER checksum for build host $HOST_ARCH" ;;
+esac
+[ "$ZIG_VER" = '0.16.0' ] || die "ZIG_VER=$ZIG_VER has no pinned checksum in this script"
+ZIG_NAME="zig-$HOST_ARCH-linux-$ZIG_VER"
+ZIG_DIR="$HERE/toolchain/$ZIG_NAME"
+ZIG="$ZIG_DIR/zig"
+if [ ! -x "$ZIG" ]; then
+	log "fetching $ZIG_NAME"
 	mkdir -p "$HERE/toolchain"
-	curl -fsSL -o "$HERE/toolchain/$TC_NAME.tar.xz" \
-		"$TC_BASE/$TC_SLUG/tarballs/$TC_NAME.tar.xz" || die 'toolchain download failed'
-	tar xf "$HERE/toolchain/$TC_NAME.tar.xz" -C "$HERE/toolchain"
-	rm -f "$HERE/toolchain/$TC_NAME.tar.xz"
+	curl -fsSL -o "$HERE/toolchain/$ZIG_NAME.tar.xz" \
+		"https://ziglang.org/download/$ZIG_VER/$ZIG_NAME.tar.xz" || die 'zig download failed'
+	printf '%s  %s\n' "$ZIG_SHA" "$HERE/toolchain/$ZIG_NAME.tar.xz" | sha256sum -c --quiet - \
+		|| die 'zig tarball checksum mismatch'
+	tar xf "$HERE/toolchain/$ZIG_NAME.tar.xz" -C "$HERE/toolchain"
+	rm -f "$HERE/toolchain/$ZIG_NAME.tar.xz"
+	[ -x "$ZIG" ] || die "zig not found at $ZIG after unpacking"
+fi
+# musl and compiler-rt are compiled per target on first use; keep that next
+# to the toolchain so CI can cache it together with zig itself.
+export ZIG_GLOBAL_CACHE_DIR="$HERE/toolchain/zig-cache"
+export ZIG_LOCAL_CACHE_DIR="$ZIG_GLOBAL_CACHE_DIR"
+
+# autoconf wants single-word CC/AR/RANLIB named <host>-<tool>; wrap zig's
+# sub-commands under those names, with target and CPU baked in.
+WRAP="$HERE/.build/wrap-$ARCH"
+rm -rf "$WRAP"
+mkdir -p "$WRAP"
+printf '#!/bin/sh\nexec "%s" cc -target %s %s "$@"\n' "$ZIG" "$ZIG_TARGET" "$ZCPU" > "$WRAP/$HOST_TRIPLE-gcc"
+printf '#!/bin/sh\nexec "%s" ar "$@"\n'     "$ZIG" > "$WRAP/$HOST_TRIPLE-ar"
+printf '#!/bin/sh\nexec "%s" ranlib "$@"\n' "$ZIG" > "$WRAP/$HOST_TRIPLE-ranlib"
+chmod 755 "$WRAP"/*
+export PATH="$WRAP:$PATH"
+CC="$HOST_TRIPLE-gcc"; AR="$HOST_TRIPLE-ar"; RANLIB="$HOST_TRIPLE-ranlib"
+export CC AR RANLIB
+
+# ---------------------------------------------------- pre-ARMv6 atomics (armv5)
+# ARMv5 has no LDREX/STREX, so clang emits calls to the legacy __sync_*
+# libcalls; zig's compiler-rt does not implement them while zig's own C runtime
+# (libzigc's SmpAllocator, which backs malloc) calls three of them, so the link
+# fails without these. See patches/arm-pre-v6-sync.c.
+# Passed as a plain object rather than an archive: LDFLAGS lands *before* the
+# object files on dropbear's link line, and an archive there would only be
+# scanned for what was already undefined at that point — an ordering an
+# archive would depend on and an object does not.
+EXTRA_LIBS=''
+if [ "$ARCH" = 'armv5' ]; then
+	log 'building the pre-ARMv6 __sync_* helpers'
+	# Not under $WORK: that is wiped when the source is unpacked below.
+	SYNC_DIR="$HERE/.build/armsync-$ARCH"
+	rm -rf "$SYNC_DIR"
+	mkdir -p "$SYNC_DIR"
+	# -fno-builtin: clang otherwise refuses to let a translation unit define a
+	# function it knows as a builtin ("cannot redeclare builtin function").
+	"$CC" -c -Os -fno-builtin -o "$SYNC_DIR/arm-pre-v6-sync.o" \
+		"$HERE/patches/arm-pre-v6-sync.c" \
+		|| die 'pre-ARMv6 atomics failed to compile'
+	EXTRA_LIBS="$SYNC_DIR/arm-pre-v6-sync.o"
+
+	# A wrong return value from one of these would link fine and log in fine,
+	# then corrupt the allocator's state under contention, so assert the
+	# semantics directly rather than inferring them from a working binary.
+	if command -v qemu-arm-static >/dev/null 2>&1; then
+		"$CC" -Os -static -o "$SYNC_DIR/sync-test" \
+			"$HERE/patches/arm-pre-v6-sync-test.c" "$HERE/patches/arm-pre-v6-sync.c" \
+			|| die 'pre-ARMv6 atomics test failed to build'
+		qemu-arm-static "$SYNC_DIR/sync-test" || die 'pre-ARMv6 atomics test failed'
+	else
+		log 'qemu-arm-static not installed: skipping the pre-ARMv6 atomics test'
+	fi
 fi
 
-# The Bootlin bin dir holds "<triple>-gcc"; pick the buildroot one.
-CC="$(ls "$TC_DIR/bin/"*-gcc 2>/dev/null | grep buildroot | head -1)"
-[ -n "$CC" ] || CC="$(ls "$TC_DIR/bin/"*-linux*-gcc 2>/dev/null | head -1)"
-[ -n "$CC" ] || die "no gcc found in $TC_DIR/bin"
-STRIP="${CC%-gcc}-strip"
-HOST_TRIPLE="$(basename "${CC%-gcc}")"
-export PATH="$TC_DIR/bin:$PATH"
-export CC
+# ------------------------------------------------------- MIPS o32 pipe() fix
+# zig 0.16.0's C runtime ships a pipe() that ignores the MIPS o32 convention
+# (both descriptors come back in registers, not through the pointer), which
+# breaks the server's child-process plumbing while leaving auth and the socket
+# path working — a login that succeeds and produces no output. Linked as a
+# loose object so it resolves pipe() ahead of any archive.
+# See patches/mips-o32-pipe.c.
+if [ "$ARCH" = 'mips' ] || [ "$ARCH" = 'mipsel' ]; then
+	log 'building the MIPS o32 pipe() override'
+	PIPE_DIR="$HERE/.build/mipspipe-$ARCH"
+	rm -rf "$PIPE_DIR"
+	mkdir -p "$PIPE_DIR"
+	"$CC" -c -Os -o "$PIPE_DIR/mips-o32-pipe.o" "$HERE/patches/mips-o32-pipe.c" \
+		|| die 'MIPS o32 pipe() override failed to compile'
+	EXTRA_LIBS="$PIPE_DIR/mips-o32-pipe.o"
+
+	# The failure this fixes is invisible to a link and to authentication, so
+	# assert the syscall behaviour itself, including a child's output arriving
+	# through a pipe.
+	QEMU_FOR_TEST="qemu-$ARCH-static"
+	if command -v "$QEMU_FOR_TEST" >/dev/null 2>&1; then
+		"$CC" -Os -static -o "$PIPE_DIR/pipe-test" \
+			"$HERE/patches/mips-o32-pipe-test.c" "$HERE/patches/mips-o32-pipe.c" \
+			|| die 'MIPS o32 pipe() test failed to build'
+		"$QEMU_FOR_TEST" "$PIPE_DIR/pipe-test" || die 'MIPS o32 pipe() test failed'
+	else
+		log "$QEMU_FOR_TEST not installed: skipping the MIPS o32 pipe() test"
+	fi
+fi
 
 # ------------------------------------------------------------------ source
 mkdir -p "$HERE/src-cache"
@@ -111,28 +206,16 @@ fi
 "$HERE/gen_cred_slots.sh" "$SRC" >/dev/null || die 'slot generation failed'
 
 # ------------------------------------------------------------------- build
-# -flto was tried here and reverted: dropbear's bundled libtomcrypt.a /
-# libtommath.a are plain (non-LTO) archives placed once at the end of the
-# link line, and gcc's LTO recompilation discovers its need for their
-# symbols too late for that single archive scan — every arch failed with
-# "undefined reference" into an "<artificial>" (LTO-merged) unit. The
-# standard fix (wrap those archives in -Wl,--start-group/--end-group) needs
-# a patch to dropbear's own Makefile.in, not just CFLAGS/LDFLAGS here, so
-# it's a separate, bigger change if it's ever worth doing.
-# -fno-(asynchronous-)unwind-tables was also tried (real ~40-100 KB savings
-# on x86_64/i686/aarch64, a byte-identical no-op on armv7/armv5/mips/mipsel)
-# and reverted: on the real GitHub Actions runner (never reproduced locally),
-# a WITH_SFTP=1 mips/mipsel build hung indefinitely mid SFTP-transfer under
-# qemu-mips-static — auth succeeded, the transfer itself never completed.
-# Isolating it to just the OpenSSH side (dropbear's own core build was
-# verified fine on mips, byte-identical output) is a plausible next step but
-# unverified — reverted outright rather than guess again through another
-# slow, hang-risking CI cycle.
-CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer $ACFLAGS"
-LDFLAGS="-static -Wl,--gc-sections"
+# Stripping happens at link time (-Wl,-s): `zig objcopy --strip-all` is
+# unimplemented as of 0.16.0 and there is no `zig strip`.
+# -flto was tried (with gcc) and reverted: the bundled libtomcrypt.a /
+# libtommath.a are plain archives placed once at the end of the link line and
+# LTO discovered its need for their symbols too late — see TODO.md.
+CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer"
+LDFLAGS="-static -Wl,--gc-sections -Wl,-s $EXTRA_LIBS"
 [ "${WITH_SFTP:-0}" = '1' ] && CFLAGS="$CFLAGS -DDBMULTI_sftp"
 
-log "building dropbearmulti for $ARCH ($HOST_TRIPLE)"
+log "building dropbearmulti for $ARCH ($ZIG_TARGET $ZCPU, zig $ZIG_VER)"
 ( cd "$SRC" && ./configure --host="$HOST_TRIPLE" \
 	CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" \
 	--enable-static --disable-zlib --disable-pam --disable-shadow \
@@ -145,15 +228,23 @@ if ( cd "$SRC" && make -j"$JOBS" \
 	>"$WORK/make.log" 2>&1 ); then
 	:
 elif [ "${WITH_SFTP:-0}" = '1' ] \
-	&& grep -q 'undefined reference to .ossh_sftp_main.\|undefined reference to .ossh_sftp_server_main.' "$WORK/make.log" \
-	&& ! grep -viE 'undefined reference to .ossh_sftp|collect2: error: ld returned' "$WORK/make.log" | grep -qiE 'error:'; then
+	&& undef_syms="$(grep -oE "undefined (symbol: |reference to .)[A-Za-z0-9_]+" "$WORK/make.log" \
+		| sed -E 's/.*(symbol: |reference to .)//' | sort -u)" \
+	&& [ -n "$undef_syms" ] \
+	&& ! printf '%s\n' "$undef_syms" \
+		| grep -vE '^ossh_sftp_(server_)?main$' | grep -q .; then
 	# Expected at this stage: dbmulti.o references the OpenSSH-side symbols
 	# that don't exist until the merge step below links them in. Every object
 	# file still got compiled — only dropbear's own (incomplete) final link
 	# failed, which the merge step redoes with the missing objects added.
+	# The condition above asserts the actual invariant: the *only* symbols the
+	# link could not resolve are those two. (Matching on the word "error"
+	# instead is not safe here — libtommath has a file called
+	# bn_mp_error_to_string.c, so its compile lines and warnings carry the
+	# word without anything being wrong.)
 	log "dropbear's own link is missing the SFTP objects as expected — merging them in next"
 else
-	grep -iE 'error:|undefined' "$WORK/make.log" | head -20 >&2
+	grep -iE 'error|undefined' "$WORK/make.log" | head -20 >&2
 	die 'build failed'
 fi
 
@@ -163,12 +254,27 @@ fi
 [ "${WITH_SFTP:-0}" = '1' ] || [ -f "$SRC/dropbearmulti" ] || die 'dropbearmulti was not produced'
 
 # ------------------------------------------------------ merge in SFTP (opt-in)
-# Builds OpenSSH's sftp/sftp-server as ordinary objects, resolves the two real
-# symbol collisions with Dropbear (`main`, `atomicio` — everything else is
-# either musl libc, satisfied once for the whole binary, or C-runtime start
-# files that only exist once anyway), and relinks dropbearmulti with them
-# spliced in as two more multi-call applets. See patches/sftp-glue.c and
-# patches/embedded-sftp-dispatch.patch for the two collisions' resolution.
+# Builds OpenSSH's sftp/sftp-server as ordinary objects, resolves the three
+# real symbol collisions by renaming at compile time (-D<old>=<new> on the
+# preprocessor, so definition, declaration and every caller move together),
+# and relinks dropbearmulti with them spliced in as two more multi-call
+# applets. See patches/sftp-glue.c and patches/embedded-sftp-dispatch.patch.
+# The collisions:
+#   atomicio      both projects have their own atomicio.c — renamed in every
+#                 OpenSSH object (via CFLAGS), a no-op where it isn't used
+#   main          sftp.c's — only that one file; sftp-server's own main()
+#                 (sftp-server-main.c) is not linked at all, sftp-glue.c
+#                 stands in for it
+#   sftp_realpath an OpenSSH-*internal* clash: the sftp client's
+#                 sftp_realpath(conn, path) and the server's unrelated
+#                 sftp_realpath(path, resolved) share a name. Normally each
+#                 lives in its own binary; merged, one definition would win
+#                 for every caller and the server handler would get a
+#                 `struct sftp_conn *` where it expects a path — found as a
+#                 real crash (garbage fd, fatal in send_msg). The client-side
+#                 pair (sftp-client.c, sftp.c) is renamed.
+# Compile-time renaming replaced `objcopy --redefine-sym` when the build
+# moved to zig, which ships no objcopy that can rename symbols.
 if [ "${WITH_SFTP:-0}" = '1' ]; then
 	log 'building OpenSSH sftp/sftp-server objects for the in-process merge'
 	OSSH_VER="${OPENSSH_VER:-9.9p2}"
@@ -189,22 +295,18 @@ if [ "${WITH_SFTP:-0}" = '1' ]; then
 	# sftp/sftp-server do no asymmetric crypto themselves, so drop OpenSSL/zlib
 	# to stay small and fully static; the cache vars answer what configure
 	# cannot probe by running target binaries under cross-compilation.
-	#
-	# $ACFLAGS (the same per-arch float ABI flags dropbear's own build gets,
-	# e.g. -msoft-float on mips/mipsel) MUST be included here too: without it,
-	# OpenSSH's objects default to the toolchain's hard-float ABI while
-	# dropbear's are soft-float, and progressmeter.c's floating-point ETA/rate
-	# math (real doubles, unlike the integer-only bignum code everywhere else)
-	# then executes hard-float instructions the real CPU doesn't decode the
-	# way a soft-float caller expects. Found the hard way: SIGILL ("Illegal
-	# instruction", exit 132) in the sftp client applet on real MIPS hardware
-	# — qemu-mips-static never caught it, apparently tolerating the ABI
-	# mismatch that real silicon does not.
+	# Target CPU / float ABI come from the $CC wrapper, identical to
+	# dropbear's own objects by construction.
+	# $EXTRA_LIBS has to be here as well as in dropbear's own LDFLAGS: on
+	# armv5 every configure link test fails without the __sync_* helpers, and
+	# a configure that cannot link concludes the function it was probing for
+	# is missing. That produced a build error in OpenSSH's getdelim
+	# replacement, which musl does have and does declare.
 	( cd "$OSRC" && ./configure --host="$HOST_TRIPLE" CC="$CC" \
 		--without-openssl --without-zlib --without-pam \
 		--without-selinux --without-kerberos5 --disable-utmp --disable-wtmp \
-		CFLAGS="-Os -ffunction-sections -fdata-sections $ACFLAGS" \
-		LDFLAGS="-static -Wl,--gc-sections" \
+		CFLAGS="-Os -ffunction-sections -fdata-sections -Datomicio=ossh_atomicio" \
+		LDFLAGS="-static -Wl,--gc-sections $EXTRA_LIBS" \
 		ac_cv_func_setresuid=yes ac_cv_func_setresgid=yes \
 		>"$OWORK/configure.log" 2>&1 ) || { tail -25 "$OWORK/configure.log" >&2; die 'openssh configure failed'; }
 
@@ -214,62 +316,37 @@ if [ "${WITH_SFTP:-0}" = '1' ]; then
 	( cd "$OSRC" && make -j"$JOBS" sftp-server sftp >"$OWORK/make.log" 2>&1 ) \
 		|| { grep -iE 'error:|undefined' "$OWORK/make.log" | head -20 >&2; die 'openssh build failed'; }
 
+	# Recompile a file with the exact flags OpenSSH's own Makefile used for it
+	# (same config.h, same include paths), plus extra defines.
+	#   ossh_recompile <src.c> <obj.o> <extra flags...>
+	ossh_recompile() {
+		src="$1"; obj="$2"; shift 2
+		line="$(grep -m1 -- "-c $src -o $obj" "$OWORK/make.log")" \
+			|| die "could not find OpenSSH's compile line for $src"
+		( cd "$OSRC" && eval "$line $*" ) || die "recompiling $src failed"
+	}
+	log 'renaming colliding symbols (main, sftp_realpath) in the sftp client objects'
+	ossh_recompile sftp.c sftp.o -Dmain=ossh_sftp_main -Dsftp_realpath=ossh_sftp_client_realpath
+	ossh_recompile sftp-client.c sftp-client.o -Dsftp_realpath=ossh_sftp_client_realpath
+
 	# Compile the glue file (cleanup_exit + ossh_sftp_server_main, see
-	# sftp-glue.c) with whatever flags OpenSSH's own Makefile used for its C
-	# files, so it sees the same config.h and include paths.
-	OSSH_CC_LINE="$(grep -m1 -- '-c sftp-server-main\.c -o sftp-server-main\.o' "$OWORK/make.log")"
-	[ -n "$OSSH_CC_LINE" ] || die 'could not find an OpenSSH compile line to model the glue build on'
+	# sftp-glue.c) with the flags OpenSSH used for sftp-server-main.c.
 	cp "$HERE/patches/sftp-glue.c" "$OSRC/sftp-glue.c"
+	OSSH_CC_LINE="$(grep -m1 -- '-c sftp-server-main\.c -o sftp-server-main\.o' "$OWORK/make.log")" \
+		|| die 'could not find an OpenSSH compile line to model the glue build on'
 	( cd "$OSRC" && eval "$(printf '%s' "$OSSH_CC_LINE" | sed 's/sftp-server-main\.c/sftp-glue.c/; s/sftp-server-main\.o/sftp-glue.o/')" ) \
 		|| die 'sftp-glue.c compile failed'
 
-	log 'renaming colliding symbols (atomicio, main) in the OpenSSH objects'
-	OBJCOPY="${CC%-gcc}-objcopy"
-	AR="${CC%-gcc}-ar"
-	RENAME_DIR="$OWORK/renamed"
-	rm -rf "$RENAME_DIR"
-	mkdir -p "$RENAME_DIR/libssh" "$RENAME_DIR/libopenbsd-compat"
-	( cd "$RENAME_DIR/libssh" && "$AR" x "$OSRC/libssh.a" )
-	( cd "$RENAME_DIR/libopenbsd-compat" && "$AR" x "$OSRC/openbsd-compat/libopenbsd-compat.a" )
 	SFTP_OBJS="$OSRC/sftp.o $OSRC/sftp-common.o $OSRC/sftp-client.o $OSRC/sftp-usergroup.o $OSRC/progressmeter.o $OSRC/sftp-glob.o $OSRC/sftp-server.o $OSRC/sftp-glue.o"
-	# atomicio: both projects have their own atomicio.c. Applied everywhere
-	# (definition + every caller) so the rename stays internally consistent;
-	# it's a silent no-op on any object that never mentions the symbol.
-	for o in "$RENAME_DIR"/libssh/*.o "$RENAME_DIR"/libopenbsd-compat/*.o $SFTP_OBJS; do
-		"$OBJCOPY" --redefine-sym atomicio=ossh_atomicio "$o" 2>/dev/null || true
-	done
-	# main: only sftp.c's copy needs it — sftp-server's own main()
-	# (sftp-server-main.c) is deliberately not linked at all; sftp-glue.c
-	# stands in for it.
-	"$OBJCOPY" --redefine-sym main=ossh_sftp_main "$OSRC/sftp.o" || die 'renaming sftp.c main failed'
-	# sftp_realpath: an OpenSSH-internal collision, not a Dropbear one — the
-	# sftp *client* (sftp-client.c) has its own sftp_realpath(conn, path), a
-	# completely different function from the sftp *server*'s simple
-	# sftp_realpath(path, resolved) in sftp-realpath.c (pulled from the
-	# archive). Normally each lives in its own binary; merged, sftp-client.o
-	# is a loose object so its definition wins for *every* caller, silently
-	# handing sftp-server.o's call a `struct sftp_conn *` where it expects a
-	# path string — found by an actual SFTP session crashing (garbage fd,
-	# fatal in send_msg) when a client asked for a realpath.
-	# objcopy takes at most one positional file (a second one is an *output*
-	# path, not a second input) — must be invoked once per file, not given a
-	# list.
-	"$OBJCOPY" --redefine-sym sftp_realpath=ossh_sftp_client_realpath "$OSRC/sftp-client.o" \
-		&& "$OBJCOPY" --redefine-sym sftp_realpath=ossh_sftp_client_realpath "$OSRC/sftp.o" \
-		|| die 'renaming sftp-client.c sftp_realpath failed'
-
-	( cd "$RENAME_DIR/libssh" && "$AR" rcs "$RENAME_DIR/libssh-merged.a" *.o )
-	( cd "$RENAME_DIR/libopenbsd-compat" && "$AR" rcs "$RENAME_DIR/libopenbsd-compat-merged.a" *.o )
 
 	log 'relinking dropbearmulti with the SFTP objects merged in'
 	DB_LINKCMD="$(grep -- '-o dropbearmulti ' "$WORK/make.log" | tail -1)"
 	[ -n "$DB_LINKCMD" ] || die 'could not find the dropbearmulti link command in make.log'
-	( cd "$SRC" && eval "$DB_LINKCMD $SFTP_OBJS -L$RENAME_DIR -lssh-merged -lopenbsd-compat-merged" ) \
-		|| die 'merged dropbearmulti link failed'
+	( cd "$SRC" && eval "$DB_LINKCMD $SFTP_OBJS -L$OSRC -L$OSRC/openbsd-compat -lssh -lopenbsd-compat" ) \
+		>"$WORK/relink.log" 2>&1 || { tail -30 "$WORK/relink.log" >&2; die 'merged dropbearmulti link failed'; }
 fi
 
 [ -f "$SRC/dropbearmulti" ] || die 'dropbearmulti was not produced'
-"$STRIP" -s "$SRC/dropbearmulti"
 
 # ---------------------------------------------------------------- verify
 for m in id hk ak; do
@@ -306,5 +383,4 @@ tar czf "$TARBALL" -C "$WORK/pkg" "dropbear-tunnel-$ARCH"
 ( cd "$OUT_DIR" && sha256sum "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" )
 
 log "done: $TARBALL ($(du -h "$TARBALL" | cut -f1))"
-"$STRIP" --version >/dev/null 2>&1 || true
 printf '    %s\n' "$(cd "$SRC" && ls -l dropbearmulti | awk '{print $5" bytes"}')"
