@@ -16,6 +16,13 @@
 # device from here with the matching private key. Nothing has to exist on the
 # device beyond a shell and wget or curl.
 #
+# Listeners, by default: one public port. sslh owns <port> on every interface
+# and looks at the first bytes of each connection -- "SSH-" goes to sshd,
+# an HTTP request to the bootstrap httpd, both of which listen on loopback
+# only (<port>+1 and <port>+2). A server behind NAT then needs exactly one
+# port forwarded. --http <port> is the older two-port layout, sshd and httpd
+# each on their own public port and no sslh; --no-http is sshd alone.
+#
 # Named /run.sh rather than /run because /run must stay a directory: OpenSSH
 # keeps its pid file there. The host-side wrapper is called 'run', so the
 # user-facing command is still `./run <port>`.
@@ -25,6 +32,8 @@
 #                          out of the host's process list)
 #   SSHD_TUNNEL_IP         space-separated server addresses to advertise; when
 #                          unset they are detected from the interfaces
+#   SSHD_TUNNEL_PUBLIC_IP  the public IPv4 the run wrapper looked up; it is what
+#                          the one-liner names when set
 
 set -eu
 
@@ -58,6 +67,7 @@ SERVE=0
 
 HTTPD_PID=''
 SSHD_PID=''
+SSLH_PID=''
 TOKEN=''
 
 log()  { printf '%s: %s\n' "$PROG" "$*" >&2; }
@@ -74,13 +84,17 @@ usage() {
 	cat <<EOF
 Usage: /run.sh <port> [password] [options]
 
-  <port>              TCP port for sshd, bound on every interface
+  <port>              the public TCP port: sshd and the bootstrap HTTP server
+                      share it (sslh tells them apart), so a server behind
+                      NAT needs this one port forwarded
   [password]          enable password-only auth for user 'tcp'
                       (omit for key-only auth with a freshly generated key)
 
 Options:
-  --no-http           do not serve the bootstrap script over HTTP
-  --http <port>       port for the bootstrap HTTP server (default: <port>+1)
+  --no-http           do not serve the bootstrap script over HTTP (sshd alone
+                      on <port>)
+  --http <port>       serve the bootstrap script on its own public port
+                      instead of sharing <port>: the two-port layout, no sslh
   --listen <patterns> PermitListen value limiting which ports the client may
                       open with -R, e.g. '10022' or '10022 5900'
                       (default: *:*, meaning any port)
@@ -149,12 +163,30 @@ if [ "$SERVE" -eq 1 ]; then
 	[ "$EXPOSE_SET" -eq 1 ] || EXPOSE='10022:127.0.0.1:2222'
 fi
 
-if [ -z "$HTTP_PORT" ]; then
-	HTTP_PORT=$((PORT + 1))
-	[ "$HTTP_PORT" -le 65535 ] || die "cannot derive an HTTP port from $PORT; pass --http"
+# Listener layout, see the header. In the single-port layout sshd and httpd
+# are on loopback behind sslh and the device is told the public port for
+# both; in the two-port layout they are public themselves.
+SINGLE_PORT=0
+if [ "$HTTP_ENABLED" -eq 1 ] && [ -z "$HTTP_PORT" ]; then
+	SINGLE_PORT=1
+	SSHD_PORT=$((PORT + 1))
+	HTTP_PORT=$((PORT + 2))
+	[ "$HTTP_PORT" -le 65535 ] || die "cannot derive loopback ports from $PORT; pass --http"
+	SSHD_LISTEN='ListenAddress 127.0.0.1'
+	HTTPD_BIND='127.0.0.1'
+	SSHD_PENALTY='PerSourcePenaltyExemptList 127.0.0.1'
+	ADVERTISED_HTTP_PORT="$PORT"
+else
+	SSHD_PORT="$PORT"
+	SSHD_LISTEN=''
+	HTTPD_BIND='0.0.0.0'
+	SSHD_PENALTY=''
+	ADVERTISED_HTTP_PORT="$HTTP_PORT"
+	if [ "$HTTP_ENABLED" -eq 1 ]; then
+		is_port "$HTTP_PORT" || die "invalid HTTP port: $HTTP_PORT"
+		[ "$HTTP_PORT" -ne "$PORT" ] || die 'the HTTP port must differ from the sshd port'
+	fi
 fi
-is_port "$HTTP_PORT" || die "invalid HTTP port: $HTTP_PORT"
-[ "$HTTP_PORT" -ne "$PORT" ] || die 'the HTTP port must differ from the sshd port'
 
 # --expose is r:h:p — server-side port, then the address:port on the device.
 EXPOSE_RPORT="${EXPOSE%%:*}"
@@ -198,6 +230,7 @@ cleanup() {
 	trap - EXIT INT TERM HUP
 	[ -n "$HTTPD_PID" ] && kill "$HTTPD_PID" 2>/dev/null || true
 	[ -n "$SSHD_PID" ] && kill "$SSHD_PID" 2>/dev/null || true
+	[ -n "$SSLH_PID" ] && kill "$SSLH_PID" 2>/dev/null || true
 	# The private keys and the tokenised URL must not outlive the process that
 	# published them.
 	[ -n "$TOKEN" ] && rm -rf "$WEB_ROOT/t/$TOKEN" || true
@@ -222,7 +255,9 @@ chmod 755 / /var/empty 2>/dev/null || true
 
 render_config() {
 	sed \
-		-e "s|@PORT@|$PORT|g" \
+		-e "s|@PORT@|$SSHD_PORT|g" \
+		-e "s|@LISTEN@|$SSHD_LISTEN|g" \
+		-e "s|@PENALTY@|$SSHD_PENALTY|g" \
 		-e "s|@HOST_KEY@|$HOST_KEY|g" \
 		-e "s|@PASSWORD_AUTH@|$PASSWORD_AUTH|g" \
 		-e "s|@PUBKEY_AUTH@|$PUBKEY_AUTH|g" \
@@ -243,6 +278,20 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
 	# baked into the release tarball and shared by every installation.
 	HOST_KEY="$RUNTIME_DIR/check_host_key"
 	rm -f "$HOST_KEY" "$HOST_KEY.pub"
+	# The single-port layout adds two directives; render that variant first
+	# and prove sshd takes them, then fall through with the plain one.
+	# (Set and reset explicitly: in ash an assignment prefixed to a function
+	# call outlives the call.)
+	SSHD_LISTEN='ListenAddress 127.0.0.1'
+	SSHD_PENALTY='PerSourcePenaltyExemptList 127.0.0.1'
+	render_config
+	CHECK_SP="$(/usr/sbin/sshd -t -f "$CONFIG" 2>&1 || true)"
+	case "$CHECK_SP" in
+		''|*'no hostkeys available'*) log 'single-port layout config accepted' ;;
+		*) die "single-port layout config rejected: $CHECK_SP" ;;
+	esac
+	SSHD_LISTEN=''
+	SSHD_PENALTY=''
 	render_config
 	# ssh-keygen draws from getrandom(2), so this succeeds even in a build
 	# container where /dev/urandom is only a placeholder file.
@@ -384,6 +433,14 @@ fi
 [ -n "$SERVER_IPS" ] || SERVER_IPS='<server-ip>'
 PRIMARY_IP="${SERVER_IPS%% *}"
 PRIMARY_IP="${PRIMARY_IP% }"
+# Behind NAT the one-liner has to name the address the port forward is
+# reachable at, which the run wrapper looks up (SSHD_TUNNEL_PUBLIC_IP).
+PUBLIC_IP="${SSHD_TUNNEL_PUBLIC_IP:-}"
+[ "$PUBLIC_IP" != 'none' ] || PUBLIC_IP=''
+if [ -n "$PUBLIC_IP" ]; then
+	PRIMARY_IP="$PUBLIC_IP"
+	SERVER_IPS="$PUBLIC_IP (public; local: $SERVER_IPS)"
+fi
 
 # ---------------------------------------------------------------- HTTP bootstrap
 BOOTSTRAP_URL=''
@@ -420,7 +477,7 @@ if [ "$HTTP_ENABLED" -eq 1 ] && [ "$SERVE" -eq 1 ]; then
 		printf '# %s --serve bootstrap, generated %s\n' "$PROG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 		printf 'SRV=%s\n'       "$(shquote "$PRIMARY_IP")"
 		printf 'SSH_PORT=%s\n'  "$(shquote "$PORT")"
-		printf 'HTTP_PORT=%s\n' "$(shquote "$HTTP_PORT")"
+		printf 'HTTP_PORT=%s\n' "$(shquote "$ADVERTISED_HTTP_PORT")"
 		printf 'TOKEN=%s\n'     "$(shquote "$TOKEN")"
 		printf '[ -n "${RPORT:-}" ] || RPORT=%s\n' "$(shquote "$EXPOSE_RPORT")"
 		printf '[ -n "${LHOST:-}" ] || LHOST=%s\n' "$(shquote "$EXPOSE_LHOST")"
@@ -430,11 +487,11 @@ if [ "$HTTP_ENABLED" -eq 1 ] && [ "$SERVE" -eq 1 ]; then
 	} > "$TOKEN_DIR/s"
 	chmod 644 "$TOKEN_DIR/s"
 
-	BOOTSTRAP_URL="http://$PRIMARY_IP:$HTTP_PORT/t/$TOKEN/s"
+	BOOTSTRAP_URL="http://$PRIMARY_IP:$ADVERTISED_HTTP_PORT/t/$TOKEN/s"
 
-	busybox-extras httpd -f -p "0.0.0.0:$HTTP_PORT" -h "$WEB_ROOT" &
+	busybox-extras httpd -f -p "$HTTPD_BIND:$HTTP_PORT" -h "$WEB_ROOT" &
 	HTTPD_PID=$!
-	log "bootstrap HTTP server listening on 0.0.0.0:$HTTP_PORT (pid $HTTPD_PID)"
+	log "bootstrap HTTP server listening on $HTTPD_BIND:$HTTP_PORT (pid $HTTPD_PID)"
 elif [ "$HTTP_ENABLED" -eq 1 ]; then
 	[ -f "$BOOTSTRAP_BODY" ] || die "missing $BOOTSTRAP_BODY"
 	TOKEN="$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
@@ -459,7 +516,7 @@ elif [ "$HTTP_ENABLED" -eq 1 ]; then
 		printf '# %s bootstrap, generated %s\n' "$PROG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 		printf 'SRV=%s\n'       "$(shquote "$PRIMARY_IP")"
 		printf 'SSH_PORT=%s\n'  "$(shquote "$PORT")"
-		printf 'HTTP_PORT=%s\n' "$(shquote "$HTTP_PORT")"
+		printf 'HTTP_PORT=%s\n' "$(shquote "$ADVERTISED_HTTP_PORT")"
 		printf 'TOKEN=%s\n'     "$(shquote "$TOKEN")"
 		printf 'MODE=%s\n'      "$(shquote "$AUTH_MODE")"
 		printf 'PASSWORD=%s\n'  "$(shquote "$PASSWORD")"
@@ -471,16 +528,23 @@ elif [ "$HTTP_ENABLED" -eq 1 ]; then
 	} > "$TOKEN_DIR/b"
 	chmod 644 "$TOKEN_DIR/b"
 
-	BOOTSTRAP_URL="http://$PRIMARY_IP:$HTTP_PORT/t/$TOKEN/b"
+	BOOTSTRAP_URL="http://$PRIMARY_IP:$ADVERTISED_HTTP_PORT/t/$TOKEN/b"
 
 	# busybox httpd serves static files only; without an index file a request
 	# for a directory is a 404, so the token is the only way in.
-	busybox-extras httpd -f -p "0.0.0.0:$HTTP_PORT" -h "$WEB_ROOT" &
+	busybox-extras httpd -f -p "$HTTPD_BIND:$HTTP_PORT" -h "$WEB_ROOT" &
 	HTTPD_PID=$!
-	log "bootstrap HTTP server listening on 0.0.0.0:$HTTP_PORT (pid $HTTPD_PID)"
+	log "bootstrap HTTP server listening on $HTTPD_BIND:$HTTP_PORT (pid $HTTPD_PID)"
 fi
 
 # ----------------------------------------------------------------------- banner
+if [ "$SINGLE_PORT" -eq 1 ]; then
+	PORT_NOTE=" (sshd and the bootstrap HTTP server share it; one port to forward)"
+elif [ "$HTTP_ENABLED" -eq 1 ]; then
+	PORT_NOTE=" sshd, $HTTP_PORT bootstrap HTTP (all interfaces)"
+else
+	PORT_NOTE=" sshd (all interfaces)"
+fi
 if [ "$SERVE" -eq 1 ]; then
 	# Where the operator will find the key on the host. The wrapper passes the
 	# rootfs path in; without it (someone chrooting by hand) the chroot path
@@ -490,7 +554,7 @@ if [ "$SERVE" -eq 1 ]; then
 
   $PROG — reverse-tunnel-only SSH server, --serve
   ------------------------------------------------------------------
-  sshd port        : $PORT (all interfaces)
+  port             : $PORT$PORT_NOTE
   addresses        : $SERVER_IPS
   auth mode        : key only; the identity is embedded in the device binary
   account          : tcp (no shell, -R forwards only)
@@ -538,7 +602,7 @@ cat <<EOF
 
   $PROG — reverse-tunnel-only SSH server
   ------------------------------------------------------------------
-  sshd port        : $PORT (all interfaces)
+  port             : $PORT$PORT_NOTE
   addresses        : $SERVER_IPS
   auth mode        : $AUTH_MODE only
   account          : tcp (no shell, -R forwards only)
@@ -607,4 +671,29 @@ EOF
 # the httpd child and the published token would survive this process.
 /usr/sbin/sshd -D -e -f "$CONFIG" &
 SSHD_PID=$!
+
+if [ "$SINGLE_PORT" -eq 1 ]; then
+	# sslh-select, not sslh-fork: the fork variant dies in this chroot after
+	# its first connection -- the child's exit interrupts the parent's
+	# accept() ("accept:4:Interrupted system call") and it gives up -- so every
+	# connection after the first was refused. The select variant is a single
+	# process and has carried repeated HTTP fetches and SSH sessions, including
+	# concurrent ones, without that (tests/test-single-port.sh asserts it).
+	# Every SSH client this project has met (Dropbear 2014 and 2026, OpenSSH)
+	# sends its "SSH-2.0-" line without waiting for the server's, so the ssh
+	# probe matches at once; --on-timeout ssh covers one that does not (such
+	# as ssh-keyscan) at the cost of the two-second timeout. IPv4 only, like
+	# the rest of this project.
+	sslh-select -f -n --timeout 2 --on-timeout ssh \
+		-p "0.0.0.0:$PORT" \
+		--ssh "127.0.0.1:$SSHD_PORT" \
+		--http "127.0.0.1:$HTTP_PORT" &
+	SSLH_PID=$!
+	# A failed bind (port in use) is the one error worth catching here rather
+	# than discovering from the device.
+	sleep 1
+	kill -0 "$SSLH_PID" 2>/dev/null || die "sslh could not take port $PORT -- is it in use?"
+	log "sslh listening on 0.0.0.0:$PORT (pid $SSLH_PID): SSH -> 127.0.0.1:$SSHD_PORT, HTTP -> 127.0.0.1:$HTTP_PORT"
+fi
+
 wait "$SSHD_PID"

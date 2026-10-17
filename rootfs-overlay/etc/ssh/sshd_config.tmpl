@@ -10,6 +10,9 @@
 # capability other than remote forwarding is switched off explicitly.
 
 Port @PORT@
+# Empty in the two-port layout (all interfaces); 'ListenAddress 127.0.0.1' in
+# the single-port layout, where sslh owns the public port and forwards here.
+@LISTEN@
 Protocol 2
 AddressFamily any
 PidFile /run/sshd.pid
@@ -48,6 +51,10 @@ IgnoreRhosts yes
 MaxAuthTries 3
 LoginGraceTime 30
 StrictModes yes
+# Single-port layout only: every connection arrives from sslh on 127.0.0.1,
+# so per-source penalties would let one client's failed logins lock everyone
+# out. Empty in the two-port layout, where penalties apply per real address.
+@PENALTY@
 
 # ------------------------------------------------------------- forwarding
 # 'remote' permits -R only: -L and -D are refused, so the client cannot reach

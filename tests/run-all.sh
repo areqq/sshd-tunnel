@@ -60,6 +60,7 @@ for test in \
 	tests/test-tunnel-password.sh \
 	tests/test-restrictions.sh \
 	tests/test-bootstrap.sh \
+	tests/test-single-port.sh \
 	tests/test-serve.sh
 do
 	printf '\n=== %s ===\n' "$test"

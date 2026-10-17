@@ -15,7 +15,6 @@ TEST_NAME='serve mode'
 require python3 od sed timeout curl ssh ssh-keygen ssh-keyscan strings
 
 PORT="$(free_port)"
-HTTP_PORT="$(free_port)"
 RPORT="$(free_port)"
 DEVPORT="$(free_port)"
 DEVICE_DIR="$TEST_TMP/device"
@@ -30,8 +29,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-printf '%s: sshd %s, http %s, reverse %s, device %s\n' \
-	"$TEST_NAME" "$PORT" "$HTTP_PORT" "$RPORT" "$DEVPORT"
+# No --http: the default single-port layout, so the device fetches its binary
+# and opens the tunnel through the same port, via sslh.
+printf '%s: port %s (sshd + http via sslh), reverse %s, device %s\n' \
+	"$TEST_NAME" "$PORT" "$RPORT" "$DEVPORT"
 
 # A rootfs built without the client binaries has no --serve mode; that is a
 # legitimate build, so the test is skipped rather than failed.
@@ -47,18 +48,19 @@ OUT="$($SUDO "$INSTALL_DIR/run" "$PORT" --serve --no-http 2>&1 || true)"
 check '--serve with --no-http is refused' 'needs the HTTP server' "$OUT"
 
 # ------------------------------------------------------------------- start
-start_server "$PORT" --serve --http "$HTTP_PORT" --expose "$RPORT:127.0.0.1:$DEVPORT"
+start_server "$PORT" --serve --expose "$RPORT:127.0.0.1:$DEVPORT"
 if ! wait_for_port "$PORT" 30; then
-	fail 'sshd did not start'
+	fail 'the server did not start'
 	server_log | sed 's/^/          | /'
 	summary
 	exit 1
 fi
-wait_for_port "$HTTP_PORT" 20 || fail 'the bootstrap HTTP server did not start'
+wait_for_text "$SERVER_LOG" 'sslh listening' 20 || fail 'sslh did not start'
 
 URL="$(grep -oE 'http://[0-9a-zA-Z.:]+/t/[0-9a-f]+/s' "$SERVER_LOG" | head -1)"
 if [ -n "$URL" ]; then
 	ok "the banner advertises $URL"
+	check 'the one-liner uses the sshd port itself' ":$PORT/t/" "$URL"
 else
 	fail 'no --serve bootstrap URL in the startup output'
 	server_log | sed 's/^/          | /'

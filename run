@@ -16,6 +16,8 @@
 #   SSHD_TUNNEL_PASSWORD     password, keeping it out of the process list
 #   SSHD_TUNNEL_SKIP_MOUNTS  set to 1 when /proc and /dev are already prepared
 #   SSHD_TUNNEL_IP           override the advertised server addresses
+#   SSHD_TUNNEL_PUBLIC_IP    the public IPv4 to advertise; looked up from
+#                            ifconfig.me when unset, 'none' skips the lookup
 #
 # The rootfs path is passed in as SSHD_TUNNEL_ROOTFS so the chroot can tell the
 # operator where, on the host, a file it generated can be found.
@@ -172,6 +174,42 @@ if [ -z "${SSHD_TUNNEL_IP:-}" ]; then
 	[ -n "$SSHD_TUNNEL_IP" ] || SSHD_TUNNEL_IP="$(hostname -I 2>/dev/null || true)"
 fi
 
+# ------------------------------------------------------------- public address
+# Behind NAT the interface addresses are useless to the device: the one-liner
+# has to name the address the port forward is reachable at. Asked of
+# ifconfig.me, IPv4 only (the device side of this project is IPv4), with a
+# short timeout so an offline host is not held up. An explicit SSHD_TUNNEL_IP
+# is the operator's decision and skips the lookup; so does
+# SSHD_TUNNEL_PUBLIC_IP=none. Only a well-formed dotted quad is passed on.
+is_ipv4() {
+	case "$1" in
+		*[!0-9.]*|'') return 1 ;;
+	esac
+	# Four octets, each 0-255.
+	printf '%s\n' "$1" | awk -F. 'NF != 4 { exit 1 } { for (i = 1; i <= 4; i++) if ($i == "" || $i > 255) exit 1 }'
+}
+
+PUBLIC_IP="${SSHD_TUNNEL_PUBLIC_IP:-}"
+if [ -n "${SSHD_TUNNEL_IP:-}" ] || [ "$PUBLIC_IP" = 'none' ]; then
+	PUBLIC_IP=''
+elif [ -z "$PUBLIC_IP" ]; then
+	if command -v curl >/dev/null 2>&1; then
+		PUBLIC_IP="$(curl -4 -fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null || true)"
+	elif command -v wget >/dev/null 2>&1; then
+		PUBLIC_IP="$(wget -4 -q -T 5 -O- https://ifconfig.me/ip 2>/dev/null || true)"
+	fi
+	PUBLIC_IP="$(printf '%s' "$PUBLIC_IP" | tr -d ' \r\n')"
+	if is_ipv4 "$PUBLIC_IP"; then
+		log "public IPv4 (ifconfig.me): $PUBLIC_IP"
+	else
+		[ -z "$PUBLIC_IP" ] || log "ignoring an unexpected answer from ifconfig.me: $PUBLIC_IP"
+		log 'public address lookup failed; advertising the interface addresses (set SSHD_TUNNEL_IP to override)'
+		PUBLIC_IP=''
+	fi
+else
+	is_ipv4 "$PUBLIC_IP" || die "SSHD_TUNNEL_PUBLIC_IP is not an IPv4 address: $PUBLIC_IP"
+fi
+
 # ------------------------------------------------------------------- handover
 # A fixed environment: the chroot has its own filesystem layout, so inheriting
 # the host's PATH would point at directories that do not exist in there.
@@ -180,6 +218,7 @@ env -i \
 	HOME='/root' \
 	TERM="${TERM:-dumb}" \
 	SSHD_TUNNEL_IP="$SSHD_TUNNEL_IP" \
+	SSHD_TUNNEL_PUBLIC_IP="$PUBLIC_IP" \
 	SSHD_TUNNEL_PASSWORD="${SSHD_TUNNEL_PASSWORD:-}" \
 	SSHD_TUNNEL_ROOTFS="$ROOTFS" \
 	chroot "$ROOTFS" "$ENTRY" "$@" &

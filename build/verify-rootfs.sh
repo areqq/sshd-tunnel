@@ -36,6 +36,7 @@ for f in \
 	vpn.sh \
 	dsvpn.sh \
 	usr/sbin/sshd \
+	usr/sbin/sslh-select \
 	usr/sbin/openvpn \
 	usr/bin/ssh-keygen \
 	usr/bin/dropbearconvert \

@@ -102,7 +102,10 @@ start_server() {
 	# start_server <args for ./run...>; sets SERVER_LOG and SERVER_PID
 	SERVER_LOG="$TEST_TMP/server.log"
 	: > "$SERVER_LOG"
-	$SUDO "$INSTALL_DIR/run" "$@" >"$SERVER_LOG" 2>&1 &
+	# The wrapper asks ifconfig.me for the public address and advertises it;
+	# a test has to reach its own server, so the lookup is switched off and
+	# the interface address is advertised instead.
+	$SUDO env SSHD_TUNNEL_PUBLIC_IP=none "$INSTALL_DIR/run" "$@" >"$SERVER_LOG" 2>&1 &
 	SERVER_PID=$!
 }
 

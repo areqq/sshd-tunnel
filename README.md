@@ -55,14 +55,48 @@ wget -qO- https://raw.githubusercontent.com/areqq/sshd-tunnel/main/install.sh | 
             |
             |  outbound TCP to server:2222
             v
-[server]  sshd inside the chroot, listening on 0.0.0.0:2222
-          -> opens a listener on 0.0.0.0:10022
+[server]  sslh on 0.0.0.0:2222 looks at the first bytes:
+            "SSH-"  -> sshd  on 127.0.0.1:2223
+            "GET "  -> httpd on 127.0.0.1:2224 (the bootstrap script)
+          sshd opens a listener on 0.0.0.0:10022
           -> traffic to server:10022 comes out on the device's 127.0.0.1:22
 ```
 
 The device dials out, so nothing needs to be forwarded to it. On the server,
 the tunnelled port is reachable from anywhere the host is reachable
 (`GatewayPorts yes`).
+
+## One port, and a server behind NAT
+
+Everything the device needs comes through the one port you give `run`: the
+SSH connection and the bootstrap one-liner. [sslh](https://github.com/yrutschle/sslh)
+owns that port and tells the two apart by the first bytes of each
+connection; sshd and the HTTP server sit on loopback behind it. So if the
+server is itself behind NAT, exactly one port has to be forwarded to it, with
+the same number outside and inside. The tunnelled port (10022) needs no
+forwarding: it is for you, on the server.
+
+The one-liner has to name the address the device can reach, which behind NAT
+is not any address on the server's interfaces. `run` asks ifconfig.me for the
+host's public IPv4 (five-second timeout, IPv4 only, the answer is checked to
+be a dotted quad) and advertises that; the banner shows both. When the lookup
+fails, the interface addresses are advertised as before. To decide yourself:
+
+```sh
+SSHD_TUNNEL_IP=203.0.113.5 sudo -E ./run 2222        # advertise this, no lookup
+SSHD_TUNNEL_PUBLIC_IP=none sudo -E ./run 2222        # no lookup, interface addresses
+```
+
+Every SSH client this project has met sends its `SSH-2.0-` line without
+waiting for the server's, so sslh recognises it at once and the handshake is
+not delayed; a client that does wait (ssh-keyscan is one) is handed to sshd
+after a two-second timeout rather than refused. One cost: sshd sees every
+connection as coming from 127.0.0.1, so its per-source penalties are switched
+off for that address in this layout. Otherwise one client's failed logins
+would lock everyone out; `MaxAuthTries` and `LoginGraceTime` still apply.
+The older two-port layout, sshd and httpd each on a public port of their own
+and no sslh, is `--http <port>`; `--no-http` is sshd alone on the port.
+`tests/test-single-port.sh` drives both layouts with the 2014 client.
 
 ## Authentication
 
@@ -127,7 +161,7 @@ BusyBox HTTP server that hands out a ready-made connect script. The startup
 banner prints the command:
 
 ```sh
-wget -O- http://10.0.0.5:2223/t/9f3a…c1/b | sh
+wget -O- http://10.0.0.5:2222/t/9f3a…c1/b | sh
 ```
 
 That script picks `dbclient` or `ssh`, fetches the key (already converted to
@@ -136,11 +170,12 @@ reverse forward, and reconnects with backoff if the link drops. Override the
 mapping from the device side:
 
 ```sh
-wget -O- http://10.0.0.5:2223/t/9f3a…c1/b | RPORT=5900 LPORT=5900 sh
+wget -O- http://10.0.0.5:2222/t/9f3a…c1/b | RPORT=5900 LPORT=5900 sh
 ```
 
-The HTTP port defaults to the sshd port + 1, and the 32-hex-character token is
-the only thing protecting the URL — anything without it gets a 404.
+The script is served on the same port as sshd (see above), and the
+32-hex-character token is the only thing protecting the URL — anything
+without it gets a 404.
 
 > **Security note.** In key mode this URL serves the private key over plain
 > HTTP to anyone who knows the token, with no expiry and no download limit, for
@@ -154,8 +189,10 @@ the only thing protecting the URL — anything without it gets a 404.
 ```
 run <port> [password] [options]
 
-  --no-http             do not serve the bootstrap script
-  --http <port>         bootstrap HTTP port           (default: <port> + 1)
+  <port>                sshd and the bootstrap HTTP server share it (sslh)
+  --no-http             do not serve the bootstrap script; sshd alone
+  --http <port>         serve the bootstrap script on its own public port
+                        instead (two ports, no sslh)
   --listen <patterns>   PermitListen value            (default: *:*)
   --expose <r:h:p>      mapping baked into the
                         bootstrap script              (default: 10022:127.0.0.1:22)
@@ -222,7 +259,7 @@ sudo ./run 2222 --serve
 ```
 
 ```sh
-wget -O- http://<server>:2223/t/<token>/s | sh
+wget -O- http://<server>:2222/t/<token>/s | sh
 ```
 
 The one-liner detects the device's architecture, pulls the matching static
@@ -441,8 +478,8 @@ sudo tests/run-all.sh
 ```
 
 Compiles Dropbear 2014.63 from source (pinned by SHA-256) and runs the tunnel,
-key-type, password, restriction, bootstrap and `--serve` suites against the
-built chroot.
+key-type, password, restriction, bootstrap, single-port and `--serve` suites
+against the built chroot.
 Requires `python3` and a C toolchain; the chroot's bind mounts mean the tests
 need root.
 
@@ -500,6 +537,10 @@ so the command you type is still `./run 2222`.
   expiry — see the security note above
 - the tunnelled port is exposed on all interfaces by design; firewall the
   server if that is not what you want
+- the public port is IPv4 only (sslh binds 0.0.0.0); the two-port layout
+  (`--http`) listens on IPv6 as well
+- behind NAT the external port number must equal the internal one; the
+  one-liner is not told about a remapped port
 
 ## License
 

@@ -150,6 +150,14 @@ fi
 [ -n "$SERVER_IPS" ] || SERVER_IPS='<server-ip>'
 PRIMARY_IP="${SERVER_IPS%% *}"
 PRIMARY_IP="${PRIMARY_IP% }"
+# Behind NAT the one-liner has to name the address the port forward is
+# reachable at, which the run wrapper looks up (SSHD_TUNNEL_PUBLIC_IP).
+PUBLIC_IP="${SSHD_TUNNEL_PUBLIC_IP:-}"
+[ "$PUBLIC_IP" != 'none' ] || PUBLIC_IP=''
+if [ -n "$PUBLIC_IP" ]; then
+	PRIMARY_IP="$PUBLIC_IP"
+	SERVER_IPS="$PUBLIC_IP (public; local: $SERVER_IPS)"
+fi
 
 # --------------------------------------------------------------- HTTP bootstrap
 TOKEN="$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
