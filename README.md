@@ -458,7 +458,7 @@ has already been through `client/verify.sh` in its own CI, so the server build
 fetches that (the tag is pinned in `.github/workflows/release.yml`):
 
 ```sh
-client/fetch-release.sh client-v0.3.0     # into client/out, checksum-verified
+client/fetch-release.sh client-v0.3.1     # into client/out, checksum-verified
 build/build.sh
 ```
 
